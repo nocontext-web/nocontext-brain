@@ -1,0 +1,34 @@
+import * as fs from 'fs'
+
+const TOKEN = process.env.ASANA_TOKEN || fs.readFileSync('/Users/joshua/nocontext-brain/.env.local', 'utf8').match(/ASANA_TOKEN=(.+)/)?.[1]?.trim()
+
+async function asana(method, path_, body) {
+  const res = await fetch(`https://app.asana.com/api/1.0${path_}`, {
+    method,
+    headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json', 'Content-Type': 'application/json' },
+    ...(body ? { body: JSON.stringify({ data: body }) } : {}),
+  })
+  const json = await res.json()
+  if (json.errors) throw new Error(json.errors[0].message)
+  return json.data
+}
+
+const workspaces = await asana('GET', '/workspaces')
+const workspace = workspaces.find(w => w.name.toLowerCase().includes('context')) ?? workspaces[0]
+const projects = await asana('GET', `/workspaces/${workspace.gid}/projects?archived=false&limit=100`)
+
+for (const project of projects) {
+  const sections = await asana('GET', `/projects/${project.gid}/sections`)
+  for (const section of sections) {
+    if (section.name.toLowerCase().includes('untitled')) {
+      try {
+        await asana('DELETE', `/sections/${section.gid}`)
+        console.log(`  ✓ Removed "Untitled section" from ${project.name}`)
+      } catch (e) {
+        console.log(`  ✗ ${project.name} — ${e.message}`)
+      }
+    }
+  }
+}
+
+console.log('Done.')
