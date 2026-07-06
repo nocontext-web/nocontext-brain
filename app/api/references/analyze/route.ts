@@ -39,10 +39,12 @@ async function ensureYtDlpBinary(): Promise<string> {
 async function downloadWithYtDlp(url: string): Promise<string> {
   const ytDlpPath = await ensureYtDlpBinary()
   const tmpPath = path.join(os.tmpdir(), `nc_ref_${Date.now()}.mp4`)
+  // Deliberately no custom --user-agent here: TikTok's extractor uses browser
+  // impersonation (curl_cffi) to bypass bot detection, and overriding the
+  // user-agent breaks that fingerprint, causing "Video not available, status
+  // code 0" even on genuinely available videos. Let yt-dlp manage its own UA.
   await exec(
-    `"${ytDlpPath}" -o "${tmpPath}" --no-playlist -q --no-warnings ` +
-    `--user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" ` +
-    `"${url}"`,
+    `"${ytDlpPath}" -o "${tmpPath}" --no-playlist -q --no-warnings "${url}"`,
     { timeout: 120000 }
   )
   if (!fs.existsSync(tmpPath)) throw new Error('yt-dlp: file not found after download')
