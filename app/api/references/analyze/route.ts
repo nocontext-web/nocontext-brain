@@ -13,10 +13,34 @@ const exec = promisify(execCb)
 const fileManager = new GoogleAIFileManager(process.env.GOOGLE_AI_API_KEY!)
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY!)
 
+// Deploy targets (Railway) don't have python3, and we don't want a build-time
+// dependency on a specific builder's package syntax — so fetch the official
+// standalone yt-dlp binary once per container and cache it in tmpdir, instead
+// of shelling out to a system python3 + pip-installed yt_dlp module.
+async function ensureYtDlpBinary(): Promise<string> {
+  const binName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'
+  const binPath = path.join(os.tmpdir(), binName)
+  if (fs.existsSync(binPath)) return binPath
+
+  const assetName = process.platform === 'win32'
+    ? 'yt-dlp.exe'
+    : process.platform === 'darwin'
+      ? 'yt-dlp_macos'
+      : 'yt-dlp_linux'
+
+  const res = await fetch(`https://github.com/yt-dlp/yt-dlp/releases/latest/download/${assetName}`, { redirect: 'follow' })
+  if (!res.ok) throw new Error(`Failed to download yt-dlp binary: ${res.status}`)
+  const buffer = Buffer.from(await res.arrayBuffer())
+  fs.writeFileSync(binPath, buffer, { mode: 0o755 })
+  fs.chmodSync(binPath, 0o755)
+  return binPath
+}
+
 async function downloadWithYtDlp(url: string): Promise<string> {
+  const ytDlpPath = await ensureYtDlpBinary()
   const tmpPath = path.join(os.tmpdir(), `nc_ref_${Date.now()}.mp4`)
   await exec(
-    `python3 -m yt_dlp -o "${tmpPath}" --no-playlist -q --no-warnings ` +
+    `"${ytDlpPath}" -o "${tmpPath}" --no-playlist -q --no-warnings ` +
     `--user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" ` +
     `"${url}"`,
     { timeout: 120000 }
@@ -60,7 +84,7 @@ export async function POST(req: NextRequest) {
 
     const casparContext = await getCasparContext()
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash-lite',
+      model: 'gemini-2.5-flash',
       systemInstruction: casparContext,
     })
 
