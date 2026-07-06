@@ -94,10 +94,12 @@ async function pullAgentUpdates(full = false) {
   if (!data || data.length === 0) return
 
   for (const note of data) {
-    const folderDir = path.join(VAULT, note.folder)
-    if (!fs.existsSync(folderDir)) fs.mkdirSync(folderDir, { recursive: true })
-
     const filePath = path.join(VAULT, note.path)
+    // note.path can have extra nested segments beyond note.folder (e.g. a title
+    // containing a "/"), so create the actual parent dir, not just the top folder.
+    const parentDir = path.dirname(filePath)
+    if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true })
+
     fs.writeFileSync(filePath, note.content, 'utf8')
     console.log(`← Agent updated: ${note.path}`)
   }
