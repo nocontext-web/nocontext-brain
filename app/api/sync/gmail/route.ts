@@ -157,8 +157,6 @@ export async function POST() {
       // Classify with Haiku — fast and cheap
       const classification = await classifyEmail(subject, from, snippet, clientNames)
 
-      if (classification.priority === 'ignore') continue
-
       // Fetch full body only for emails that need attention
       let body = snippet
       if (classification.needsAttention) {
