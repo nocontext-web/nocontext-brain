@@ -77,6 +77,8 @@ needsAttention = true if: someone is waiting for a reply, a decision is needed, 
 
 needsAttention = false if: it's automated, a receipt, a notification, a system email, a newsletter, a billing confirmation, a report, or doesn't require any action from Josh.
 
+Team ownership: Ria owns creator/influencer partnership threads end-to-end (collab logistics, deliverables, posting schedules, outreach follow-ups) via ClickUp — these don't need Josh even when they look like a decision is pending. If the email is about a brand x creator collab or influencer partnership, set needsAttention to false UNLESS it's a brand-new partnership opportunity that hasn't been scoped yet, a budget/fee negotiation, or a legal/contract dispute — those still need Josh.
+
 priority "high" = client question, potential new business, something time-sensitive.
 priority "normal" = needs reply but not urgent.
 priority "ignore" = automated or no action needed.`
