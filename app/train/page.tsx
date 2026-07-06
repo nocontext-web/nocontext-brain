@@ -520,10 +520,8 @@ type GranolaNote = {
 
 type ProposedTask = {
   name: string
-  assignee: 'josh' | 'zoe' | null
-  assigneeGid: string | null
-  projectName: string
-  projectGid: string | null
+  assignee: 'josh' | 'zoe' | 'molly' | 'ellie' | 'ria' | 'lever' | null
+  listName: string | null
   notes?: string
 }
 
@@ -623,7 +621,7 @@ function GranolaTab() {
     if (!tasks?.length) return
     setCreatingTasks(prev => ({ ...prev, [meetingId]: true }))
     try {
-      await fetch('/api/asana/create', {
+      await fetch('/api/clickup/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tasks }),
@@ -789,7 +787,7 @@ function GranolaTab() {
                   {(pendingTasks[r.id]?.length ?? 0) > 0 && (
                     <div className="px-4 py-4">
                       <div className="flex items-center justify-between mb-3">
-                        <p className="font-mono text-[10px] uppercase tracking-widest text-yellow-400">Proposed Asana tasks — confirm to create</p>
+                        <p className="font-mono text-[10px] uppercase tracking-widest text-yellow-400">Proposed ClickUp tasks — confirm to create</p>
                       </div>
                       <div className="flex flex-col gap-2 mb-3">
                         {pendingTasks[r.id].map((task, i) => (
@@ -802,7 +800,9 @@ function GranolaTab() {
                                     {task.assignee}
                                   </span>
                                 )}
-                                <span className="text-[10px] font-mono text-[#8e8e93]">{task.projectName}</span>
+                                {task.listName && (
+                                  <span className="text-[10px] font-mono text-[#8e8e93]">{task.listName}</span>
+                                )}
                               </div>
                             </div>
                             <button

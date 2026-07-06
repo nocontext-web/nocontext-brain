@@ -3,44 +3,16 @@ import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
 import { saveMemories } from '@/lib/memory'
 import { syncThoughtToVault } from '@/lib/obsidian'
+import { resolveClickUpList, createClickUpTask } from '@/lib/clickup'
 
 const GRANOLA_BASE = 'https://public-api.granola.ai'
 
-// Asana GIDs
-const ASANA_WORKSPACE = '1212334737336408'
-const ASANA_ASSIGNEES: Record<string, string> = {
-  josh: '1211506431895958',
-  zoe: '1212270562077938',
-}
-const ASANA_PROJECTS: Record<string, string> = {
-  'no context': '1212334741195736',
-  'noon': '1212334743792693',
-  'unyoked': '1212334743792703',
-  'tokyo head spa': '1212334743792709',
-  'messina': '1212334743792714',
-  'lendus': '1212335381363154',
-  'bar none': '1213999940541303',
-  'big sam young': '1213999940552670',
-  'futurerent': '1214000040844748',
-  'mr. katz': '1214000285215799',
-  'koala': '1214000285241772',
-  'taxibox': '1214000285269355',
-  'mimi and munch': '1214000285333054',
-  'hide & seek': '1214000285334392',
-  'grumpy bums': '1214000301305033',
-  'salt water and song': '1214000301312168',
-  'fig & bloom': '1214000313721948',
-  'sortd': '1214000313824282',
-  'face factor': '1214000313855570',
-  'pago': '1214000301305033',
-}
+export type TeamAssignee = 'josh' | 'zoe' | 'molly' | 'ellie' | 'ria' | 'lever'
 
 export type ProposedTask = {
   name: string
-  assignee: 'josh' | 'zoe' | null
-  assigneeGid: string | null
-  projectName: string
-  projectGid: string | null
+  assignee: TeamAssignee | null
+  listName: string | null
   notes?: string
 }
 
@@ -60,11 +32,6 @@ type GranolaSpeaker = {
 type GranolaTranscript = {
   speakers?: GranolaSpeaker[]
   text?: string
-}
-
-function resolveProjectGid(projectName: string): string | null {
-  const key = projectName.toLowerCase().trim()
-  return ASANA_PROJECTS[key] ?? ASANA_PROJECTS['no context']
 }
 
 async function fetchGranolaHeaders() {
@@ -164,8 +131,7 @@ Return a JSON object with exactly this shape — no markdown, JSON only:
   "tasks": [
     {
       "name": "specific action — verb first, e.g. 'Write 3 hook concepts for Tokyo Head Spa relaunch'",
-      "assignee": "josh" or "zoe" or null,
-      "project": "exact client name or 'No Context' for internal stuff",
+      "assignee": "josh" or "zoe" or "molly" or "ellie" or "ria" or "lever" or null,
       "notes": "optional — only if context genuinely helps"
     }
   ],
@@ -179,7 +145,7 @@ Return a JSON object with exactly this shape — no markdown, JSON only:
 Rules:
 - recap: compress hard. No waffle. If nothing was decided, say so.
 - tasks: every concrete action mentioned. Specific verbs. "Josh to follow up" is not a task. "Josh to send Bar None proposal by Friday" is.
-- assignee: "josh" for Josh, "zoe" for Zoe. null if unclear or shared.
+- assignee: "josh" for Josh, "zoe"/"molly" for content, "ellie" for editing, "ria" for creator outreach, "lever" for ads. null if unclear or shared.
 - caspar_take: this is personal. Not a summary. Caspar's actual internal response.`,
     }],
   })
@@ -202,12 +168,10 @@ Rules:
       thinking = parsed.caspar_take?.thinking ?? ''
       casparTake = [feeling, learned, thinking].filter(Boolean).join('\n\n')
 
-      proposedTasks = (parsed.tasks ?? []).map((t: { name: string; assignee: string | null; project: string; notes?: string }) => ({
+      proposedTasks = (parsed.tasks ?? []).map((t: { name: string; assignee: string | null; notes?: string }) => ({
         name: t.name,
-        assignee: t.assignee as 'josh' | 'zoe' | null,
-        assigneeGid: t.assignee ? (ASANA_ASSIGNEES[t.assignee] ?? null) : null,
-        projectName: t.project || 'No Context',
-        projectGid: resolveProjectGid(t.project || 'No Context'),
+        assignee: t.assignee as TeamAssignee | null,
+        listName: resolveClickUpList(t.assignee)?.listKey ?? null,
         notes: t.notes,
       }))
     }
@@ -231,14 +195,18 @@ Rules:
     )
   }
 
-  // Format Slack message — clean and scannable
-  const joshTasks = proposedTasks.filter(t => t.assignee === 'josh')
-  const zoeTasks = proposedTasks.filter(t => t.assignee === 'zoe')
-  const unassigned = proposedTasks.filter(t => !t.assignee)
+  // Format Slack message — clean and scannable, grouped by whoever it's assigned to
+  const byAssignee = new Map<string, ProposedTask[]>()
+  const unassigned: ProposedTask[] = []
+  for (const t of proposedTasks) {
+    if (!t.assignee) { unassigned.push(t); continue }
+    const key = t.assignee[0].toUpperCase() + t.assignee.slice(1)
+    if (!byAssignee.has(key)) byAssignee.set(key, [])
+    byAssignee.get(key)!.push(t)
+  }
 
   const taskBlock = [
-    joshTasks.length ? `*Josh*\n${joshTasks.map(t => `• ${t.name}`).join('\n')}` : '',
-    zoeTasks.length ? `*Zoe*\n${zoeTasks.map(t => `• ${t.name}`).join('\n')}` : '',
+    ...Array.from(byAssignee.entries()).map(([name, tasks]) => `*${name}*\n${tasks.map(t => `• ${t.name}`).join('\n')}`),
     unassigned.length ? `*TBD*\n${unassigned.map(t => `• ${t.name}`).join('\n')}` : '',
   ].filter(Boolean).join('\n\n')
 
@@ -330,6 +298,7 @@ export async function POST(req: NextRequest) {
         const { data: existingTodos } = await supabase.from('todos').select('content').eq('done', false)
         const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
         const addedTodos: string[] = []
+        const addedClickUp: string[] = []
 
         for (const task of proposedTasks) {
           const normNew = norm(task.name)
@@ -341,16 +310,32 @@ export async function POST(req: NextRequest) {
             if (wordsNew.length === 0) return false
             return wordsNew.filter((w: string) => wordsEx.includes(w)).length / wordsNew.length >= 0.75
           })
-          if (!isDupe) {
+          if (isDupe) continue
+
+          // Team-member tasks go to their ClickUp list — that's where they actually work.
+          // Josh's own tasks (and anything unclear/shared) stay in the shared todos list.
+          const list = resolveClickUpList(task.assignee)
+          if (list) {
+            try {
+              await createClickUpTask({ listId: list.listId, title: task.name, description: task.notes, assignee: task.assignee })
+              addedClickUp.push(`${task.name} → ${list.listKey}`)
+            } catch (err) {
+              // ClickUp not configured or errored — fall back to the shared todos list so nothing is lost
+              await supabase.from('todos').insert({ content: task.name, done: false })
+              addedTodos.push(`${task.name} (ClickUp failed: ${err instanceof Error ? err.message : String(err)})`)
+            }
+          } else {
             await supabase.from('todos').insert({ content: task.name, done: false })
             addedTodos.push(task.name)
           }
         }
 
-        // Append todo summary to Slack message if any were added
-        const fullSlackMessage = addedTodos.length
-          ? `${slackMessage}\n\n*Added to todos:*\n${addedTodos.map(t => `• ${t}`).join('\n')}`
-          : slackMessage
+        // Append summary to Slack message if anything was added
+        const additions = [
+          addedClickUp.length ? `*Added to ClickUp:*\n${addedClickUp.map(t => `• ${t}`).join('\n')}` : '',
+          addedTodos.length ? `*Added to todos:*\n${addedTodos.map(t => `• ${t}`).join('\n')}` : '',
+        ].filter(Boolean).join('\n\n')
+        const fullSlackMessage = additions ? `${slackMessage}\n\n${additions}` : slackMessage
 
         // Post to #yay
         await postToSlack(fullSlackMessage)
