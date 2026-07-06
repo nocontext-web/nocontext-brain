@@ -7,7 +7,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 
-const VAULT = '/Users/joshua/Desktop/secret'
+const VAULT = '/Users/joshua/nocontext-vault'
 const TOKEN = process.env.ASANA_TOKEN || fs.readFileSync('/Users/joshua/nocontext-brain/.env.local', 'utf8').match(/ASANA_TOKEN=(.+)/)?.[1]?.trim()
 
 if (!TOKEN) { console.error('No ASANA_TOKEN found'); process.exit(1) }

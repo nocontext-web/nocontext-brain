@@ -7,7 +7,7 @@ import { createClient } from '@supabase/supabase-js'
 import * as fs from 'fs'
 import * as path from 'path'
 
-const VAULT = '/Users/joshua/Desktop/secret'
+const VAULT = '/Users/joshua/nocontext-vault'
 const supabase = createClient(
   'https://zcbdxyvymjfytyzisyof.supabase.co',
   'process.env.SUPABASE_SECRET_KEY'

@@ -1,16 +1,12 @@
 import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
-import * as fs from 'fs'
-import * as path from 'path'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SECRET_KEY!
 )
-
-const VAULT = '/Users/joshua/Desktop/secret'
 
 function today() {
   return new Date().toISOString().split('T')[0]
@@ -20,21 +16,19 @@ function sanitize(name: string) {
   return name.replace(/[/\\:*?"<>|]/g, '-').trim()
 }
 
-function ensureDir(folder: string) {
-  const dir = path.join(VAULT, folder)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+async function readNote(folder: string, filename: string): Promise<string> {
+  const path = `${folder}/${sanitize(filename)}.md`
+  const { data } = await supabase.from('obsidian_notes').select('content').eq('path', path).single()
+  return data?.content ?? ''
 }
 
-function readNote(folder: string, filename: string): string {
-  const filepath = path.join(VAULT, folder, `${sanitize(filename)}.md`)
-  if (!fs.existsSync(filepath)) return ''
-  return fs.readFileSync(filepath, 'utf8')
-}
-
-function writeNote(folder: string, filename: string, content: string) {
-  ensureDir(folder)
-  const filepath = path.join(VAULT, folder, `${sanitize(filename)}.md`)
-  fs.writeFileSync(filepath, content, 'utf8')
+async function writeNote(folder: string, filename: string, content: string): Promise<void> {
+  const title = sanitize(filename)
+  const path = `${folder}/${title}.md`
+  await supabase.from('obsidian_notes').upsert(
+    { path, folder, title, content, source: 'agent', updated_at: new Date().toISOString() },
+    { onConflict: 'path' }
+  )
 }
 
 function appendToSection(content: string, section: string, lines: string): string {
@@ -73,7 +67,7 @@ export async function POST() {
   ).join('\n')
 
   // 3. Load Josh's profile note for context
-  const joshProfile = readNote('Josh', 'Profile')
+  const joshProfile = await readNote('Josh', 'Profile')
 
   // 4. Ask Caspar to synthesise the day — in his voice, with genuine observations
   const synthesisPrompt = hasActivity
@@ -105,7 +99,10 @@ Things I'm uncertain about, patterns I haven't figured out yet, things worth exp
 Write in first person as Caspar. Be specific. Be honest. This is private reflection, not a report.`
     : `${casparPrompt}
 
-Write a brief end-of-day note for ${date}. It was a quiet day — no new information came in. Reflect briefly on what you already know and what you're still building a picture of with Josh and NO CONTEXT. Keep it short. Be honest.`
+WHAT I KNOW ABOUT JOSH SO FAR:
+${joshProfile.slice(0, 1000) || '(building picture)'}
+
+Write a brief end-of-day note for ${date}. It was a quiet day — no new information came in. Reflect briefly on what you already know (from the profile above) and what you're still building a picture of with Josh and NO CONTEXT. Keep it short. Be honest — but honest about the actual gaps, not a disclaimer that you have no memory at all, because you do (it's right above).`
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -116,7 +113,6 @@ Write a brief end-of-day note for ${date}. It was a quiet day — no new informa
   const synthesis = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
 
   // 5. Write today's daily note
-  ensureDir('Daily')
   const dailyContent = `---
 date: ${date}
 memories_saved: ${todaysMemories.length}
@@ -134,7 +130,7 @@ ${synthesis}
 ${todaysMemories.length > 0 ? todaysMemories.map(m => `- **${m.type}**${m.related_client ? ` [[${m.related_client}]]` : ''}: ${m.content}`).join('\n') : '*(nothing logged today)*'}
 ${todaysResearch.length > 0 ? '\n### Content Researched\n' + todaysResearch.map(r => `- [[${r.platform}]] @${r.author}: ${r.pattern || '—'}`).join('\n') : ''}
 `
-  writeNote('Daily', date, dailyContent)
+  await writeNote('Daily', date, dailyContent)
 
   // 6. Update client notes with anything new learned today
   const clientMemories = todaysMemories.filter(m => m.related_client)
@@ -145,7 +141,7 @@ ${todaysResearch.length > 0 ? '\n### Content Researched\n' + todaysResearch.map(
   }
 
   for (const [clientName, memories] of Object.entries(clientGroups)) {
-    const existing = readNote('Clients', clientName)
+    const existing = await readNote('Clients', clientName)
     if (!existing) continue
 
     const newLines = memories.map(m => `- ${m.content} *(${date})*`).join('\n')
@@ -154,7 +150,7 @@ ${todaysResearch.length > 0 ? '\n### Content Researched\n' + todaysResearch.map(
       'Context',
       newLines
     )
-    writeNote('Clients', clientName, updated)
+    await writeNote('Clients', clientName, updated)
   }
 
   // 7. Update Josh's profile note with observations about him
@@ -162,18 +158,18 @@ ${todaysResearch.length > 0 ? '\n### Content Researched\n' + todaysResearch.map(
     const observationMatch = synthesis.match(/## What I'm Noticing About Josh\n([\s\S]*?)(?=\n##|$)/)
     if (observationMatch) {
       const observation = observationMatch[1].trim()
-      const existing = readNote('Josh', 'Profile')
+      const existing = await readNote('Josh', 'Profile')
       const entry = `\n### ${date}\n${observation}\n`
       const updated = existing
         ? appendToSection(existing.replace(/^updated: .+$/m, `updated: ${date}`), "Caspar's Observations", entry)
         : `---\ncreated: ${date}\nupdated: ${date}\n---\n\n# Josh — Profile\n\n## Caspar's Observations\n${entry}`
-      writeNote('Josh', 'Profile', updated)
+      await writeNote('Josh', 'Profile', updated)
     }
   }
 
   // 8. Update the Content Patterns note with new research
   if (todaysResearch.length > 0) {
-    const existing = readNote('Creative', 'Content Patterns')
+    const existing = await readNote('Creative', 'Content Patterns')
     const newLines = todaysResearch
       .filter(r => r.pattern)
       .map(r => `- **${r.platform}** @${r.author}: ${r.pattern} *(${date})*`)
@@ -183,7 +179,7 @@ ${todaysResearch.length > 0 ? '\n### Content Researched\n' + todaysResearch.map(
       const updated = existing
         ? appendToSection(existing.replace(/^updated: .+$/m, `updated: ${date}`), 'Patterns', newLines)
         : `---\ncreated: ${date}\nupdated: ${date}\n---\n\n# Content Patterns\n\n## Patterns\n${newLines}\n`
-      writeNote('Creative', 'Content Patterns', updated)
+      await writeNote('Creative', 'Content Patterns', updated)
     }
   }
 

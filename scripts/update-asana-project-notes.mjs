@@ -7,7 +7,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import Anthropic from '@anthropic-ai/sdk'
 
-const VAULT = '/Users/joshua/Desktop/secret'
+const VAULT = '/Users/joshua/nocontext-vault'
 const envFile = fs.readFileSync('/Users/joshua/nocontext-brain/.env.local', 'utf8')
 const TOKEN = process.env.ASANA_TOKEN || envFile.match(/ASANA_TOKEN=(.+)/)?.[1]?.trim()
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY || envFile.match(/ANTHROPIC_API_KEY=(.+)/)?.[1]?.trim()

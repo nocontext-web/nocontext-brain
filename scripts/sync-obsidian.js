@@ -13,8 +13,8 @@ const fs = require('fs')
 const path = require('path')
 const { createClient } = require('@supabase/supabase-js')
 
-const VAULT = '/Users/joshua/Desktop/secret'
-const FOLDERS = ['Clients', 'Creators', 'Culture', 'Campaigns', 'Taste', 'Josh']
+const VAULT = '/Users/joshua/nocontext-vault'
+const FOLDERS = ['Clients', 'Creators', 'Culture', 'Campaigns', 'Taste', 'Josh', 'People', 'Decisions', 'Creative', 'Rules', 'Caspar', 'Daily']
 const POLL_INTERVAL = 15000 // 15 seconds
 
 const supabase = createClient(
@@ -74,18 +74,24 @@ async function syncAll() {
   console.log('Full sync complete.')
 }
 
-// Poll Supabase for notes updated by agents and write them back to vault
-async function pullAgentUpdates() {
+// Poll Supabase for notes updated by agents and write them back to vault.
+// `full: true` pulls every agent-authored note regardless of when it was last
+// updated — used once on startup so a fresh/stopped vault backfills everything
+// instead of only catching updates from this point forward.
+async function pullAgentUpdates(full = false) {
   const since = lastPoll
   lastPoll = new Date().toISOString()
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('obsidian_notes')
     .select('path, folder, title, content')
     .eq('source', 'agent')
-    .gte('updated_at', since)
 
-  if (error || !data || data.length === 0) return
+  if (!full) query = query.gte('updated_at', since)
+
+  const { data, error } = await query
+  if (error) { console.error('pullAgentUpdates error:', error.message); return }
+  if (!data || data.length === 0) return
 
   for (const note of data) {
     const folderDir = path.join(VAULT, note.folder)
@@ -95,6 +101,8 @@ async function pullAgentUpdates() {
     fs.writeFileSync(filePath, note.content, 'utf8')
     console.log(`← Agent updated: ${note.path}`)
   }
+
+  if (full) console.log(`← Backfilled ${data.length} agent notes`)
 }
 
 async function main() {
@@ -102,6 +110,11 @@ async function main() {
   console.log('Vault:', VAULT)
 
   await syncAll()
+
+  // Backfill everything Caspar/Hermes have already written before we start
+  // watching — otherwise notes written while this script wasn't running are
+  // invisible forever (it only used to catch updates from the moment it starts).
+  await pullAgentUpdates(true)
 
   // Watch vault for your changes → Supabase
   const watcher = chokidar.watch(FOLDERS.map(f => path.join(VAULT, f)), {
@@ -116,7 +129,7 @@ async function main() {
     .on('unlink', deleteNote)
 
   // Poll Supabase for agent updates → vault
-  setInterval(pullAgentUpdates, POLL_INTERVAL)
+  setInterval(() => pullAgentUpdates(false), POLL_INTERVAL)
 
   console.log('Watching for changes... (Ctrl+C to stop)')
 }

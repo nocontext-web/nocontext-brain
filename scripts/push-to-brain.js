@@ -11,7 +11,7 @@ const fs = require('fs')
 const path = require('path')
 const { createClient } = require('@supabase/supabase-js')
 
-const VAULT = '/Users/joshua/Desktop/secret'
+const VAULT = '/Users/joshua/nocontext-vault'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,

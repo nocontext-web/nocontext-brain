@@ -167,7 +167,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="font-semibold text-[#1c1c1e] text-sm">Obsidian</h2>
-                <p className="text-xs text-[#6c6c70] mt-0.5">Two-way sync with your vault at ~/Desktop/secret</p>
+                <p className="text-xs text-[#6c6c70] mt-0.5">Two-way sync with your vault at ~/nocontext-vault</p>
               </div>
               <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20">
                 Active
