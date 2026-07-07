@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react'
 type Client = {
   id: string; name: string; website?: string; instagram?: string; tiktok?: string
   status?: string; monthly_value?: number; next_action?: string; context_notes?: string; created_at: string
+  services?: string[]
 }
 type Todo    = { id: string; content: string; done?: boolean; created_at: string }
 type Email   = { id: string; subject: string; from_address: string; received_at: string; priority: string; needs_attention: boolean; reason?: string; suggested_reply?: string; status: string }
@@ -37,6 +38,10 @@ function encodeNotes(p: Parsed) {
   if (p.notes.trim())    parts.push(`NOTES:${p.notes.trim()}`)
   return parts.join('\n')
 }
+
+// ─── Services ───────────────────────────────────────────────────────────────
+
+const SERVICE_TAGS = ['Creator Management', 'Ads Management', 'Content', 'Video Production', 'Creative Strategy', 'Brand Strategy', 'Community Management']
 
 // ─── Columns ────────────────────────────────────────────────────────────────
 
@@ -333,6 +338,14 @@ function ClientCard({ client, urgentSet, todos, isSelected, isDragging, onClick,
           </div>
         </div>
 
+        {client.services && client.services.length > 0 && (
+          <div className="flex flex-wrap gap-1 mb-2.5">
+            {client.services.map(s => (
+              <span key={s} className="text-[9px] font-mono uppercase tracking-wide text-[#6c6c70] bg-black/[0.04] rounded-full px-1.5 py-0.5">{s}</span>
+            ))}
+          </div>
+        )}
+
         {scope ? (
           <p className="text-[11px] text-[#6c6c70] leading-relaxed mb-2 line-clamp-2">{scope}</p>
         ) : (
@@ -414,6 +427,9 @@ function ClientPanel({ client, todos, onUpdate, onClose, onCompleteTodo, onAddTo
   const [nextAction,setNextAction]=useState(client.next_action??'')
   const [mrr,      setMrr]      = useState(String(client.monthly_value??''))
   const [editMrr,  setEditMrr]  = useState(false)
+  const [services, setServices] = useState<string[]>(client.services??[])
+  const [addingService,setAddingService]=useState(false)
+  const [newService,setNewService]=useState('')
   const [newTodo,  setNewTodo]  = useState('')
   const [addingTodo,setAddingTodo]=useState(false)
   const [expEmail, setExpEmail] = useState<string|null>(null)
@@ -436,6 +452,14 @@ function ClientPanel({ client, todos, onUpdate, onClose, onCompleteTodo, onAddTo
     const val=mrr.trim()?Number(mrr):null; await patchClient(client.id,{monthly_value:val}); onUpdate({monthly_value:val??undefined}); setEditMrr(false)
   }
   async function saveStatus(s:string) { await patchClient(client.id,{status:s}); onUpdate({status:s}) }
+  async function saveServices(next:string[]) {
+    setServices(next); await patchClient(client.id,{services:next}); onUpdate({services:next})
+  }
+  function toggleService(s:string) { saveServices(services.includes(s)?services.filter(x=>x!==s):[...services,s]) }
+  function addCustomService() {
+    const s=newService.trim(); if (s && !services.includes(s)) saveServices([...services,s])
+    setNewService(''); setAddingService(false)
+  }
   async function dismissEmail(id:string) {
     await fetch(`${SB_URL}/rest/v1/email_inbox?id=eq.${id}`,{method:'PATCH',headers:{...sbH(),Prefer:'return=minimal'},body:JSON.stringify({status:'done'})})
     setEmails(es=>es.filter(e=>e.id!==id))
@@ -489,6 +513,34 @@ function ClientPanel({ client, todos, onUpdate, onClose, onCompleteTodo, onAddTo
                 {b.label}
               </button>
             ))}
+          </div>
+        </PSection>
+
+        <PSection label="Services">
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {SERVICE_TAGS.map(s=>(
+              <button key={s} onClick={()=>toggleService(s)}
+                className={`px-2.5 py-1 rounded-full border text-[11px] font-medium transition-all ${services.includes(s)?'bg-[#1c1c1e] text-white border-[#1c1c1e]':'bg-white text-[#6c6c70] border-black/[0.08] hover:border-black/[0.2]'}`}>
+                {s}
+              </button>
+            ))}
+            {services.filter(s=>!SERVICE_TAGS.includes(s)).map(s=>(
+              <button key={s} onClick={()=>toggleService(s)}
+                className="px-2.5 py-1 rounded-full border text-[11px] font-medium bg-[#1c1c1e] text-white border-[#1c1c1e]">
+                {s} ✕
+              </button>
+            ))}
+            {addingService ? (
+              <input autoFocus value={newService} onChange={e=>setNewService(e.target.value)}
+                onKeyDown={e=>{if(e.key==='Enter')addCustomService();if(e.key==='Escape'){setAddingService(false);setNewService('')}}}
+                onBlur={addCustomService} placeholder="Custom service…"
+                className="w-28 text-[11px] outline-none text-[#1c1c1e] placeholder:text-[#c7c7cc] border-b border-black/[0.15] pb-1 bg-transparent" />
+            ) : (
+              <button onClick={()=>setAddingService(true)}
+                className="px-2.5 py-1 rounded-full border border-dashed border-black/[0.15] text-[11px] text-[#aeaeb2] hover:text-[#6c6c70] hover:border-black/[0.3]">
+                + Other
+              </button>
+            )}
           </div>
         </PSection>
 
