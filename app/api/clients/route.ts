@@ -11,11 +11,11 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { name, website, instagram, tiktok } = await req.json()
+  const { name, website, instagram, tiktok, monthly_value, status } = await req.json()
 
   const { data, error } = await supabase
     .from('clients')
-    .insert({ name, website, instagram, tiktok })
+    .insert({ name, website, instagram, tiktok, monthly_value, status: status ?? 'active' })
     .select()
     .single()
 
