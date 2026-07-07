@@ -115,7 +115,8 @@ export default function TodayPage() {
       fetch(`${sb}/rest/v1/calendar_events?start_time=gte.${now}&start_time=lte.${endOfDay.toISOString()}&order=start_time&limit=10`, { headers }),
       fetch(`${sb}/rest/v1/email_inbox?needs_attention=eq.true&status=eq.unread&order=priority.desc&limit=8`, { headers }),
       fetch(`${sb}/rest/v1/todos?done=eq.false&order=created_at&limit=20`, { headers }),
-      fetch(`${sb}/rest/v1/agent_thoughts?agent=eq.caspar&order=created_at.desc&limit=5`, { headers }),
+      // Only show auto-think thoughts — these are always fresh from the last sync
+      fetch(`${sb}/rest/v1/agent_thoughts?agent=eq.caspar&context=eq.auto-think&order=created_at.desc&limit=4`, { headers }),
     ])
 
     const [evData, emailData, todoData, thoughtData] = await Promise.all([
@@ -132,11 +133,12 @@ export default function TodayPage() {
   async function syncAndLoad() {
     setSyncing(true)
     setGoogleError(false)
+
     const [calRes, gmailRes] = await Promise.allSettled([
       fetch('/api/sync/calendar', { method: 'POST' }),
       fetch('/api/sync/gmail', { method: 'POST' }),
     ])
-    // Check if Google isn't connected
+
     const hasError = await Promise.any([calRes, gmailRes].map(async r => {
       if (r.status === 'fulfilled') {
         const data = await r.value.clone().json().catch(() => ({}))
@@ -146,15 +148,25 @@ export default function TodayPage() {
     })).catch(() => false)
     if (hasError) setGoogleError(true)
 
-    // Granola: sync new meetings in background (posts to #yay automatically)
-    fetch('/api/granola/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
-    }).catch(() => {})
-
-    // Morning briefing: Caspar posts to #yay once per day with calendar + inbox + todos
+    // Run in background — don't block the UI
+    fetch('/api/granola/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
     fetch('/api/sync/morning', { method: 'POST' }).catch(() => {})
+
+    // Thinking loop — regenerate Caspar's mind from current state
+    // Run this after calendar + gmail so it has fresh data
+    fetch('/api/sync/think', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.thoughts) {
+          setThoughts(data.thoughts.map((t: { type: string; content: string }, i: number) => ({
+            id: String(i),
+            type: t.type,
+            content: t.content,
+            created_at: new Date().toISOString(),
+          })))
+        }
+      })
+      .catch(() => {})
 
     await loadAll()
     setSyncing(false)
@@ -207,15 +219,18 @@ export default function TodayPage() {
 
   useEffect(() => { syncAndLoad() }, [])
 
-  // Refresh todos when tab regains focus
+  // Auto-refresh everything every 15 min — keeps the whole dashboard current
+  // without a manual Sync click. Used to only refresh Caspar's Mind, which is
+  // why todos/emails/calendar could sit stale for as long as the tab stayed open.
   useEffect(() => {
-    function onFocus() {
-      const sb = process.env.NEXT_PUBLIC_SUPABASE_URL!
-      const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-      fetch(`${sb}/rest/v1/todos?done=eq.false&order=created_at&limit=20`, {
-        headers: { apikey: key, Authorization: `Bearer ${key}` },
-      }).then(r => r.json()).then(data => setTodos(Array.isArray(data) ? data : []))
-    }
+    const interval = setInterval(() => { syncAndLoad() }, 15 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Refresh everything when tab regains focus — same reasoning, this used to
+  // only refresh todos.
+  useEffect(() => {
+    function onFocus() { syncAndLoad() }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [])
@@ -327,13 +342,29 @@ export default function TodayPage() {
               ) : (
                 <div className="flex flex-col gap-2">
                   {[...highEmails, ...normalEmails].map((e, i) => (
-                    <div key={e.id} className="flex items-start gap-3 px-3 py-3 bg-black/[0.025] border border-black/[0.04] rounded-xl animate-fade-up" style={{ animationDelay: `${i * 35}ms` }}>
+                    <div key={e.id} className="group flex items-start gap-3 px-3 py-3 bg-black/[0.025] border border-black/[0.04] rounded-xl animate-fade-up" style={{ animationDelay: `${i * 35}ms` }}>
                       <div className={`w-1.5 h-1.5 rounded-full mt-[5px] shrink-0 ${e.priority === 'high' ? 'bg-[#EF22DA]' : 'bg-black/[0.12]'}`} />
                       <div className="flex-1 min-w-0">
                         <p className="text-[13px] text-[#1c1c1e] font-medium truncate">{e.subject}</p>
                         <p className="text-[11px] text-[#aeaeb2] truncate mt-0.5">{e.from_address.replace(/<.*?>/, '').trim()}</p>
                         {e.suggested_reply && <p className="text-[11px] text-[#EF22DA]/60 mt-1 leading-snug">{e.suggested_reply}</p>}
                       </div>
+                      <button
+                        onClick={async () => {
+                          const sb = process.env.NEXT_PUBLIC_SUPABASE_URL!
+                          const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+                          await fetch(`${sb}/rest/v1/email_inbox?id=eq.${e.id}`, {
+                            method: 'PATCH',
+                            headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+                            body: JSON.stringify({ status: 'done' }),
+                          })
+                          setEmails(prev => prev.filter(x => x.id !== e.id))
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 text-[11px] text-[#aeaeb2] hover:text-[#6c6c70] px-1.5 py-0.5 rounded-lg hover:bg-black/[0.04]"
+                        title="Dismiss"
+                      >
+                        ✕
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -344,11 +375,12 @@ export default function TodayPage() {
             <Card className="p-5">
               <div className="flex items-center justify-between mb-4">
                 <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2]">Caspar's Mind</p>
+                <span className="text-[9px] font-mono text-[#c7c7cc] uppercase tracking-widest">Live</span>
               </div>
               {!loaded ? (
                 <div className="flex flex-col gap-2">{[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}</div>
               ) : thoughts.length === 0 ? (
-                <p className="text-sm text-[#c7c7cc] italic">Mind is quiet.</p>
+                <p className="text-sm text-[#c7c7cc] italic">Hit sync to wake Caspar up.</p>
               ) : (
                 <div className="flex flex-col gap-3">
                   {thoughts.map((t, i) => (
