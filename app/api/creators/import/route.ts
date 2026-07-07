@@ -105,7 +105,12 @@ async function downloadWithYtDlp(url: string): Promise<string> {
   return tmpPath
 }
 
-async function analyseCreatorStyle(videoPath: string, creatorName: string): Promise<string> {
+function extractField(text: string, key: string): string {
+  const pattern = new RegExp(`${key}:\\s*([\\s\\S]*?)(?=\\n[A-Z]+:|$)`, 'i')
+  return text.match(pattern)?.[1]?.trim() ?? ''
+}
+
+async function analyseCreatorStyle(videoPath: string, creatorName: string): Promise<{ notes: string; categories: string[]; location: string }> {
   const upload = await fileManager.uploadFile(videoPath, {
     mimeType: 'video/mp4',
     displayName: `nc_creator_${Date.now()}`,
@@ -124,16 +129,28 @@ async function analyseCreatorStyle(videoPath: string, creatorName: string): Prom
   const result = await model.generateContent([
     { fileData: { mimeType: upload.file.mimeType, fileUri: upload.file.uri } },
     {
-      text: `Watch this video. You're building a creative brief on this creator for a social media agency.
+      text: `Watch this video. You're building a creative brief on this creator for a social media agency, to file into a creator rolodex.
 
-Describe them in 3-4 sentences covering: their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
+Respond in exactly this format, no markdown, no extra text before or after:
 
-No headers, no bullet points. Just a clear, confident paragraph.`,
+NOTES: 3-4 sentences covering their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
+
+CATEGORIES: 2-4 short tags for what this creator is good for (e.g. comedy, talking head, founder story, lo-fi, high production, product demo, observational). Comma separated, lowercase, 1-3 words each.
+
+LOCATION: If they mention or it's visually obvious where they're based (city/region), name it. Otherwise write unknown.`,
     },
   ])
 
   await fileManager.deleteFile(upload.file.name).catch(() => {})
-  return result.response.text().trim()
+  const text = result.response.text().trim()
+
+  const notes = extractField(text, 'NOTES') || text
+  const categories = extractField(text, 'CATEGORIES')
+    .split(',')
+    .map(c => c.trim().toLowerCase())
+    .filter(Boolean)
+  const location = extractField(text, 'LOCATION')
+  return { notes, categories, location: /^unknown$/i.test(location) ? '' : location }
 }
 
 async function getVideoUrl(url: string): Promise<string> {
@@ -187,8 +204,13 @@ export async function POST(req: NextRequest) {
   const ttFollowers = ttData.tt_followers_raw || 0
   const maxFollowers = Math.max(igFollowers, ttFollowers)
 
-  // Analyse creator style from video if provided
+  // Analyse creator style from video if provided — this is also where "what
+  // they're good for" (categories) and a location fallback come from, since
+  // the TikTok scraper doesn't return location at all and Instagram's is
+  // often blank too.
   let styleNotes = igData.bio || ''
+  let categories: string[] = []
+  let videoLocation = ''
   if (videoUrl) {
     let tmpPath: string | null = null
     try {
@@ -196,7 +218,10 @@ export async function POST(req: NextRequest) {
       tmpPath = dlUrl
         ? await downloadVideo(dlUrl).catch(() => downloadWithYtDlp(videoUrl))
         : await downloadWithYtDlp(videoUrl)
-      styleNotes = await analyseCreatorStyle(tmpPath, igData.name || ttData.name || '')
+      const analysis = await analyseCreatorStyle(tmpPath, igData.name || ttData.name || '')
+      styleNotes = analysis.notes
+      categories = analysis.categories
+      videoLocation = analysis.location
     } catch (e: any) {
       errors.push(`Video analysis: ${String(e.message).slice(0, 100)}`)
     } finally {
@@ -211,10 +236,10 @@ export async function POST(req: NextRequest) {
     tt_handle: ttData.tt_handle || '',
     tt_followers: ttData.tt_followers || '',
     tier: inferTier(maxFollowers),
-    location: igData.location || '',
+    location: igData.location || videoLocation || '',
     notes: styleNotes,
     status: 'prospect',
-    categories: [],
+    categories,
   }
 
   const { data, error } = await supabase.from('creators').insert(creator).select().single()
