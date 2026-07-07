@@ -18,9 +18,10 @@ type Creator = {
   creator_campaigns: Campaign[]
 }
 
-const STATUSES = ['prospect', 'active', 'complete', 'fell_through']
+const STATUSES = ['scouted', 'prospect', 'active', 'complete', 'fell_through']
 
 const STATUS_DOT: Record<string, string> = {
+  scouted: 'bg-amber-400/60',
   active: 'bg-[#EF22DA]',
   prospect: 'bg-black/[0.06]',
   complete: 'bg-emerald-500/60',

@@ -238,7 +238,11 @@ export async function POST(req: NextRequest) {
     tier: inferTier(maxFollowers),
     location: igData.location || videoLocation || '',
     notes: styleNotes,
-    status: 'prospect',
+    // 'scouted' — this is Josh building out a personal rolodex of creators he
+    // rates, not Ria's active outreach/deal pipeline. 'prospect' implies
+    // we've already started pursuing them for a specific client; someone can
+    // promote a creator to that once real outreach actually begins.
+    status: 'scouted',
     categories,
   }
 
