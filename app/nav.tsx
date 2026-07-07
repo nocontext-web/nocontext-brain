@@ -5,41 +5,14 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
 type NavItem = { href: string; label: string; icon: string }
-type NavSection = { items: NavItem[] }
 
-const sections: NavSection[] = [
-  {
-    items: [
-      { href: '/',              label: 'Today',      icon: '◈' },
-      { href: '/agents/caspar', label: 'Chat',       icon: '◐' },
-    ],
-  },
-  {
-    items: [
-      { href: '/board',         label: 'Board',      icon: '⊞' },
-      { href: '/clients',       label: 'Clients',    icon: '◎' },
-      { href: '/creators',      label: 'Creators',   icon: '✦' },
-    ],
-  },
-  {
-    items: [
-      { href: '/research',      label: 'Research',   icon: '⌕' },
-      { href: '/ideate',        label: 'Ideate',     icon: '⊹' },
-      { href: '/generate',      label: 'Scripts',    icon: '≡' },
-      { href: '/templates',     label: 'Templates',  icon: '⊡' },
-    ],
-  },
-  {
-    items: [
-      { href: '/train',         label: 'Train',      icon: '⬡' },
-      { href: '/references',    label: 'References', icon: '⊟' },
-      { href: '/transcribe',    label: 'Transcribe', icon: '◉' },
-    ],
-  },
+const items: NavItem[] = [
+  { href: '/',         label: 'Today',    icon: '◈' },
+  { href: '/clients',  label: 'Clients',  icon: '◎' },
+  { href: '/creators', label: 'Creators', icon: '✦' },
 ]
 
 const bottomItems: NavItem[] = [
-  { href: '/agents',   label: 'Agents',   icon: '⚙' },
   { href: '/settings', label: 'Settings', icon: '⊘' },
 ]
 
@@ -52,7 +25,7 @@ export default function Nav() {
     return pathname === href || pathname.startsWith(href + '/')
   }
 
-  function NavIcon({ href, label, icon }: NavItem) {
+  function NavLink({ href, label, icon }: NavItem) {
     const active = isActive(href)
     return (
       <Link
@@ -63,15 +36,11 @@ export default function Nav() {
             : 'hover:bg-black/[0.05]'
         }`}
       >
-        <span className={`text-[13px] leading-none w-5 text-center shrink-0 ${
-          active ? 'text-[#EF22DA]' : 'text-[#b0b0b5]'
-        }`}>
+        <span className={`text-[13px] leading-none w-5 text-center shrink-0 ${active ? 'text-[#EF22DA]' : 'text-[#b0b0b5]'}`}>
           {icon}
         </span>
         <span
-          className={`text-[12px] font-medium whitespace-nowrap overflow-hidden transition-all duration-150 ${
-            active ? 'text-[#1c1c1e]' : 'text-[#6c6c70]'
-          }`}
+          className={`text-[12px] font-medium whitespace-nowrap overflow-hidden transition-all duration-150 ${active ? 'text-[#1c1c1e]' : 'text-[#6c6c70]'}`}
           style={{ opacity: open ? 1 : 0, maxWidth: open ? '120px' : '0px' }}
         >
           {label}
@@ -85,7 +54,7 @@ export default function Nav() {
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       className="shrink-0 flex flex-col h-full border-r border-black/[0.07] bg-white/80 overflow-hidden"
-      style={{ width: open ? '164px' : '52px', transition: 'width 180ms ease' }}
+      style={{ width: open ? '148px' : '52px', transition: 'width 180ms ease' }}
     >
       {/* Logo */}
       <div className="h-14 flex items-center border-b border-black/[0.06] shrink-0 px-3.5 gap-1.5">
@@ -98,23 +67,14 @@ export default function Nav() {
         </span>
       </div>
 
-      {/* Nav sections */}
-      <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 flex flex-col gap-0.5 px-1.5">
-        {sections.map((section, si) => (
-          <div key={si} className="flex flex-col gap-0.5 w-full">
-            {si > 0 && <div className="h-px bg-black/[0.07] my-1.5 mx-1" />}
-            {section.items.map(item => (
-              <NavIcon key={item.href} {...item} />
-            ))}
-          </div>
-        ))}
+      {/* Main nav */}
+      <div className="flex-1 py-3 flex flex-col gap-0.5 px-1.5">
+        {items.map(item => <NavLink key={item.href} {...item} />)}
       </div>
 
       {/* Bottom */}
       <div className="pb-4 flex flex-col gap-0.5 px-1.5 border-t border-black/[0.06] pt-3 shrink-0">
-        {bottomItems.map(item => (
-          <NavIcon key={item.href} {...item} />
-        ))}
+        {bottomItems.map(item => <NavLink key={item.href} {...item} />)}
       </div>
     </nav>
   )
