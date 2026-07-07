@@ -49,6 +49,7 @@ const COLS = [
   { key:'blocked',         label:'Blocked',         dot:'bg-red-400',     header:'border-red-200 bg-red-50/60',       ring:'ring-red-300',    cnt:'bg-red-100 text-red-500',        accent:'border-l-red-400' },
   { key:'needs-attention', label:'Needs Attention',  dot:'bg-amber-400',   header:'border-amber-200 bg-amber-50/60',   ring:'ring-amber-300',  cnt:'bg-amber-100 text-amber-600',    accent:'border-l-amber-400' },
   { key:'on-track',        label:'On Track',         dot:'bg-emerald-400', header:'border-emerald-200 bg-emerald-50/60', ring:'ring-emerald-300',cnt:'bg-emerald-100 text-emerald-700', accent:'border-l-emerald-400' },
+  { key:'adhoc',           label:'Ad Hoc',           dot:'bg-sky-400',     header:'border-sky-200 bg-sky-50/60',       ring:'ring-sky-300',    cnt:'bg-sky-100 text-sky-600',         accent:'border-l-sky-400' },
   { key:'prospect',        label:'Prospect',         dot:'bg-violet-400',  header:'border-violet-200 bg-violet-50/60', ring:'ring-violet-300', cnt:'bg-violet-100 text-violet-600',  accent:'border-l-violet-400' },
   { key:'paused',          label:'Paused',           dot:'bg-zinc-300',    header:'border-zinc-200 bg-zinc-50/60',     ring:'ring-zinc-300',   cnt:'bg-zinc-100 text-zinc-500',      accent:'border-l-zinc-300' },
 ]
@@ -57,6 +58,7 @@ function getCol(c: Client, urgentSet: Set<string>) {
   const s = c.status ?? 'active'
   if (s === 'paused' || s === 'churned') return 'paused'
   if (s === 'prospect') return 'prospect'
+  if (s === 'adhoc') return 'adhoc'
   const { health } = parseNotes(c.context_notes)
   if (health === 'blocked') return 'blocked'
   if (health === 'needs-attention' || urgentSet.has(c.name.toLowerCase())) return 'needs-attention'
@@ -146,10 +148,12 @@ export default function ClientsPage() {
       const n=encodeNotes({...parsed,health:''}); await patchClient(client.id,{status:'prospect',context_notes:n}); updateLocal(client.id,{status:'prospect',context_notes:n})
     } else if (colKey==='paused') {
       const n=encodeNotes({...parsed,health:''}); await patchClient(client.id,{status:'paused',context_notes:n}); updateLocal(client.id,{status:'paused',context_notes:n})
+    } else if (colKey==='adhoc') {
+      const n=encodeNotes({...parsed,health:''}); await patchClient(client.id,{status:'adhoc',context_notes:n}); updateLocal(client.id,{status:'adhoc',context_notes:n})
     } else {
       const h:{[k:string]:string}={blocked:'blocked','needs-attention':'needs-attention','on-track':'on-track'}
       const newHealth=h[colKey]??''; const n=encodeNotes({...parsed,health:newHealth})
-      const newStatus=(client.status==='paused'||client.status==='prospect')?'active':(client.status??'active')
+      const newStatus=(client.status==='paused'||client.status==='prospect'||client.status==='adhoc')?'active':(client.status??'active')
       await patchClient(client.id,{status:newStatus,context_notes:n}); updateLocal(client.id,{status:newStatus,context_notes:n})
     }
   }
@@ -486,7 +490,7 @@ function ClientPanel({ client, todos, onUpdate, onClose, onCompleteTodo, onAddTo
           <div className="flex items-center gap-2 flex-wrap">
             <select value={client.status??'active'} onChange={e=>saveStatus(e.target.value)}
               className="text-[11px] font-mono text-[#aeaeb2] bg-transparent border-0 outline-none cursor-pointer appearance-none hover:text-[#6c6c70]">
-              {['active','prospect','paused','churned'].map(s=><option key={s} value={s}>{s}</option>)}
+              {['active','prospect','adhoc','paused','churned'].map(s=><option key={s} value={s}>{s}</option>)}
             </select>
             <span className="text-[#e0e0e0]">·</span>
             {editMrr ? (
