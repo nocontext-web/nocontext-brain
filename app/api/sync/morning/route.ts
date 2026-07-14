@@ -24,6 +24,16 @@ function todayKey() {
 }
 
 export async function POST() {
+  // Backstop: only post within the morning window, Sydney time. This is meant to run
+  // off the 9am cron in nocontext-slack — if it's ever hit outside this window (stray
+  // call, retry, manual curl), no-op instead of posting a "morning" message at night.
+  const sydneyHour = Number(
+    new Date().toLocaleString('en-US', { timeZone: 'Australia/Sydney', hour: 'numeric', hour12: false })
+  )
+  if (sydneyHour < 6 || sydneyHour >= 11) {
+    return NextResponse.json({ ok: true, skipped: true, reason: 'outside morning window' })
+  }
+
   // Only post once per day — check if already done
   const { data: existing } = await supabase
     .from('agent_thoughts')

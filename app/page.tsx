@@ -150,7 +150,6 @@ export default function TodayPage() {
 
     // Run in background — don't block the UI
     fetch('/api/granola/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
-    fetch('/api/sync/morning', { method: 'POST' }).catch(() => {})
 
     // Thinking loop — regenerate Caspar's mind from current state
     // Run this after calendar + gmail so it has fresh data
