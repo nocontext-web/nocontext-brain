@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { supabase } from '@/lib/supabase'
+import { saveMemory } from '@/lib/memory'
 
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY!)
 
@@ -61,14 +62,16 @@ Write a clear, complete takeaway of what he said — what he wants, any decision
 
     const date = new Date().toLocaleDateString('en-AU', { timeZone: 'Australia/Sydney', day: 'numeric', month: 'short', year: 'numeric' })
 
-    // memories is additive (insert), so this is the safe place for the full
-    // takeaway — nothing here can clobber earlier entries.
-    await supabase.from('memories').insert({
+    // saveMemory (not a raw insert) is what actually syncs to the real
+    // Obsidian vault note for this client — a raw insert into `memories`
+    // would sit in the database but never reach a .md file on disk.
+    await saveMemory({
       type: 'client',
       content: `${client.name}: ${takeaway}`,
       source: 'hermes_video',
       related_client: client.name,
       tags: ['hermes', 'video-note'],
+      status: 'active',
     })
 
     // context_notes is a single free-text field the client panel also edits,
