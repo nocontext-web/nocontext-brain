@@ -1,5 +1,16 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
 import type { Memory, MemoryType } from '@/lib/memory'
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+
+// Types prone to becoming a single ever-growing bullet list (Taste Notes.md,
+// Content Patterns.md, etc) go through integrateFact instead of appendToNote —
+// it decides whether a fact belongs in an existing focused note or deserves
+// its own, and integrates it into the actual prose instead of tacking on a
+// bullet. client/contact stay on appendToNote: they're already one note per
+// entity, so there's no "which note" decision to make.
+const SMART_INTEGRATE_TYPES: MemoryType[] = ['creative_insight', 'taste_note', 'process_rule', 'opinion', 'general']
 
 // Notes live in Supabase (obsidian_notes), not on disk — this code runs on Railway,
 // which has no access to Josh's laptop filesystem. A local watcher script
@@ -114,6 +125,97 @@ updated: ${date}
 }
 
 /**
+ * Files a fact into the right existing note, or a new one, instead of
+ * appending a bullet to one big aggregate note. Two Claude calls: a cheap one
+ * to decide where it goes, then one to actually integrate it — rewriting the
+ * relevant part of the note, and inserting a `> [!contradiction]` callout
+ * (citing both the old and new claim) if the fact conflicts with what's
+ * already there, instead of silently overwriting it.
+ */
+async function integrateFact(folder: string, fact: string, opts: { relatedClient?: string; source?: string } = {}): Promise<void> {
+  const line = addWikilinks(fact, opts.relatedClient)
+  const sourceTag = opts.source ? ` (${opts.source})` : ''
+  const factLine = `${line}${sourceTag}`
+
+  const { data: existingNotes } = await supabase
+    .from('obsidian_notes')
+    .select('path, title, content')
+    .eq('folder', folder)
+
+  const notes = existingNotes ?? []
+  const catalog = notes.length ? notes.map(n => `- ${n.title}`).join('\n') : '(folder is empty)'
+
+  const decisionRes = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 200,
+    messages: [{
+      role: 'user',
+      content: `You maintain a personal knowledge vault (Obsidian) for Josh, founder of a social-first creative agency.
+
+New fact for the "${folder}" folder: "${factLine}"
+
+Existing notes in this folder:
+${catalog}
+
+Decide where it belongs. Reply with JSON only, no markdown:
+{ "action": "integrate" | "new_note", "title": "exact existing title to integrate into, or a short new Title Case name with no file extension" }
+
+Only choose "integrate" if the fact is genuinely about the same specific concept as an existing note — not just the same broad topic. Prefer a new, focused note over cramming unrelated facts into a broad one.`,
+    }],
+  })
+
+  const decisionText = decisionRes.content[0]?.type === 'text' ? decisionRes.content[0].text : ''
+  const match = decisionText.match(/\{[\s\S]*\}/)
+  const decision: { action: 'integrate' | 'new_note'; title: string } = match
+    ? JSON.parse(match[0])
+    : { action: 'new_note', title: sanitizeFilename(fact.slice(0, 40)) }
+
+  const target = notes.find(n => n.title === decision.title)
+  const date = today()
+
+  if (decision.action === 'integrate' && target) {
+    const writeRes = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1200,
+      messages: [{
+        role: 'user',
+        content: `Integrate this new fact into the existing note below. Don't just append a bullet — weave it into the right section, or add a new section if none fits.
+
+If the new fact contradicts something already in the note, don't silently overwrite it: insert a callout in exactly this form, right above the affected section —
+> [!contradiction] ${date}
+> Existing: "<the old claim>"
+> New: "<the new claim>" (${factLine})
+Leave both claims visible so Josh can resolve it himself.
+
+NEW FACT: ${factLine}
+
+EXISTING NOTE ("${target.title}"):
+${target.content}
+
+Return only the full updated note content (markdown), no preamble or explanation.`,
+      }],
+    })
+    const updated = writeRes.content[0]?.type === 'text' ? writeRes.content[0].text.trim() : target.content
+    if (updated) await upsertNote(target.path, folder, target.title, updated)
+    return
+  }
+
+  // new_note
+  const title = sanitizeFilename(decision.title || fact.slice(0, 40))
+  const notePath = `${folder}/${title}.md`
+  const initial = `---
+created: ${date}
+updated: ${date}
+---
+
+# ${title}
+
+${factLine}
+`
+  await upsertNote(notePath, folder, title, initial)
+}
+
+/**
  * Write to today's daily log.
  */
 async function appendToDailyLog(memory: Memory): Promise<void> {
@@ -169,8 +271,13 @@ export async function syncMemoryToVault(memory: Memory): Promise<void> {
     } else if (memory.type === 'contact' && memory.related_client) {
       // Contact memories → people note named after the person
       await appendToNote('People', memory.related_client, `${line}${sourceTag}`, 'Notes')
+    } else if (SMART_INTEGRATE_TYPES.includes(memory.type)) {
+      // These used to all pile into one ever-growing note (e.g. every taste_note
+      // as a bullet in Taste/Taste Notes.md) — integrateFact decides whether this
+      // belongs in an existing focused note or deserves its own.
+      await integrateFact(folder, memory.content, { relatedClient: memory.related_client || undefined, source: memory.source })
     } else {
-      // Everything else → the appropriate aggregate note
+      // decision: a running log is the right shape for this one, keep it simple.
       const noteName = TYPE_TO_NOTE[memory.type] || 'Notes'
       await appendToNote(folder, noteName, `${line}${sourceTag}`, heading)
     }

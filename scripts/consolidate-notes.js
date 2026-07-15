@@ -77,6 +77,7 @@ Write a single, well-structured note that:
 - Adds your own synthesis and useful observations where relevant
 - Reads like a living document that will keep growing — not a log
 - Is concise but complete
+- If two of the source notes actually contradict each other (not just cover different things), don't silently pick one — add a "> [!contradiction]" callout quoting both claims so Josh can resolve it himself
 
 Return only the note content, no preamble or explanation.`
     }]

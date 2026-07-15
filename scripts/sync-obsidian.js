@@ -11,7 +11,11 @@ require('dotenv').config({ path: require('path').join(__dirname, '../.env.local'
 const chokidar = require('chokidar')
 const fs = require('fs')
 const path = require('path')
+const { execFile } = require('child_process')
+const { promisify } = require('util')
 const { createClient } = require('@supabase/supabase-js')
+
+const execFileAsync = promisify(execFile)
 
 const VAULT = '/Users/joshua/nocontext-vault'
 const FOLDERS = ['Clients', 'Creators', 'Culture', 'Campaigns', 'Taste', 'Josh', 'People', 'Decisions', 'Creative', 'Rules', 'Caspar', 'Daily']
@@ -74,6 +78,23 @@ async function syncAll() {
   console.log('Full sync complete.')
 }
 
+// Every agent-driven write gets committed so a bad automated edit is a
+// `git revert`/`git log -p` away, not a silent, permanent loss. Never throws —
+// a git hiccup shouldn't take down the sync loop, it just means that one
+// batch of changes isn't backed by a commit yet (the next one still works).
+async function commitAgentChanges(paths) {
+  try {
+    await execFileAsync('git', ['add', '--', ...paths], { cwd: VAULT });
+    const summary = paths.length <= 3 ? paths.join(', ') : `${paths.length} notes`;
+    await execFileAsync('git', ['commit', '-q', '-m', `agent: ${summary}`], { cwd: VAULT });
+  } catch (err) {
+    // Most common case: nothing to commit (content unchanged) — not an error.
+    if (!/nothing to commit/.test(err.stdout || err.message || '')) {
+      console.error('git commit failed:', err.message);
+    }
+  }
+}
+
 // Poll Supabase for notes updated by agents and write them back to vault.
 // `full: true` pulls every agent-authored note regardless of when it was last
 // updated — used once on startup so a fresh/stopped vault backfills everything
@@ -93,6 +114,7 @@ async function pullAgentUpdates(full = false) {
   if (error) { console.error('pullAgentUpdates error:', error.message); return }
   if (!data || data.length === 0) return
 
+  const writtenPaths = []
   for (const note of data) {
     const filePath = path.join(VAULT, note.path)
     // note.path can have extra nested segments beyond note.folder (e.g. a title
@@ -101,8 +123,11 @@ async function pullAgentUpdates(full = false) {
     if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true })
 
     fs.writeFileSync(filePath, note.content, 'utf8')
+    writtenPaths.push(note.path)
     console.log(`← Agent updated: ${note.path}`)
   }
+
+  await commitAgentChanges(writtenPaths)
 
   if (full) console.log(`← Backfilled ${data.length} agent notes`)
 }
