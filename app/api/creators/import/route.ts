@@ -49,7 +49,9 @@ async function scrapeInstagram(url: string) {
   const username = extractUsername(url)
   const data = await fetchFromApify('apify~instagram-scraper', {
     directUrls: [`https://www.instagram.com/${username}/`],
-    resultsType: 'profiles',
+    // The actor's actual allowed values are "posts" | "details" | "comments" —
+    // "profiles" isn't one of them and was failing every single import.
+    resultsType: 'details',
     resultsLimit: 1,
   })
   if (!data.length) throw new Error('No Instagram profile data returned')
@@ -110,7 +112,11 @@ function extractField(text: string, key: string): string {
   return text.match(pattern)?.[1]?.trim() ?? ''
 }
 
-async function analyseCreatorStyle(videoPath: string, creatorName: string): Promise<{ notes: string; categories: string[]; location: string }> {
+async function analyseCreatorStyle(
+  videoPath: string,
+  creatorName: string,
+  requestedUseCase?: string
+): Promise<{ notes: string; categories: string[]; location: string }> {
   const upload = await fileManager.uploadFile(videoPath, {
     mimeType: 'video/mp4',
     displayName: `nc_creator_${Date.now()}`,
@@ -126,10 +132,18 @@ async function analyseCreatorStyle(videoPath: string, creatorName: string): Prom
   if (file.state === FileState.FAILED) throw new Error('Gemini failed to process video')
 
   const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+  // When Josh names a use-case ("amazing creator for how-to content", "good
+  // UGC for USA"), the notes need to specifically argue why this creator
+  // fits *that*, not just describe them generically — and that use-case has
+  // to come back out as a clean tag so it's actually findable later.
+  const useCaseInstruction = requestedUseCase
+    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Your CATEGORIES must include a clean, short tag for that exact use-case (e.g. "how-to content", "usa ugc") in addition to any other tags you'd naturally add.`
+    : ''
   const result = await model.generateContent([
     { fileData: { mimeType: upload.file.mimeType, fileUri: upload.file.uri } },
     {
       text: `Watch this video. You're building a creative brief on this creator for a social media agency, to file into a creator rolodex.
+${useCaseInstruction}
 
 Respond in exactly this format, no markdown, no extra text before or after:
 
@@ -151,6 +165,30 @@ LOCATION: If they mention or it's visually obvious where they're based (city/reg
     .filter(Boolean)
   const location = extractField(text, 'LOCATION')
   return { notes, categories, location: /^unknown$/i.test(location) ? '' : location }
+}
+
+// Josh sending just a profile link (no specific video) is the common case —
+// grab their most recent post automatically instead of requiring him to dig
+// up and paste a separate reel/video link every time.
+async function getRecentPostVideoUrl(profileUrl: string, platform: 'instagram' | 'tiktok'): Promise<string> {
+  const token = process.env.APIFY_API_KEY!
+  if (platform === 'instagram') {
+    const data = await fetchFromApify('apify~instagram-scraper', {
+      directUrls: [profileUrl], resultsType: 'posts', resultsLimit: 1,
+    })
+    return data[0]?.videoUrl || data[0]?.videoSrc || ''
+  }
+  const username = extractUsername(profileUrl)
+  const data = await fetchFromApify('clockworks~tiktok-scraper', {
+    profiles: [username], resultsPerPage: 1,
+    shouldDownloadVideos: true, shouldDownloadCovers: false, shouldDownloadSubtitles: false,
+  })
+  const item = data[0]
+  let videoUrl = item?.videoUrlNoWaterMark || item?.videoUrl || item?.mediaUrls?.[0] || ''
+  if (videoUrl?.includes('api.apify.com')) {
+    videoUrl = videoUrl.includes('?') ? `${videoUrl}&token=${token}` : `${videoUrl}?token=${token}`
+  }
+  return videoUrl
 }
 
 async function getVideoUrl(url: string): Promise<string> {
@@ -179,8 +217,8 @@ async function getVideoUrl(url: string): Promise<string> {
 }
 
 export async function POST(req: NextRequest) {
-  const { igUrl, ttUrl, videoUrl } = await req.json() as {
-    igUrl?: string; ttUrl?: string; videoUrl?: string
+  const { igUrl, ttUrl, videoUrl, note } = await req.json() as {
+    igUrl?: string; ttUrl?: string; videoUrl?: string; note?: string
   }
 
   if (!igUrl && !ttUrl) {
@@ -204,21 +242,37 @@ export async function POST(req: NextRequest) {
   const ttFollowers = ttData.tt_followers_raw || 0
   const maxFollowers = Math.max(igFollowers, ttFollowers)
 
-  // Analyse creator style from video if provided — this is also where "what
-  // they're good for" (categories) and a location fallback come from, since
-  // the TikTok scraper doesn't return location at all and Instagram's is
-  // often blank too.
+  // Analyse creator style from video — this is also where "what they're good
+  // for" (categories) and a location fallback come from, since the TikTok
+  // scraper doesn't return location at all and Instagram's is often blank
+  // too. Run this whenever there's an explicit video, OR Josh gave a note
+  // ("amazing creator for how-to content") — that note needs an actual watch
+  // to back it up, not just get repeated back as a tag.
   let styleNotes = igData.bio || ''
   let categories: string[] = []
   let videoLocation = ''
-  if (videoUrl) {
+  if (videoUrl || note) {
     let tmpPath: string | null = null
     try {
-      const dlUrl = await getVideoUrl(videoUrl).catch(() => '')
+      let dlUrl: string
+      let fallbackUrl: string
+      if (videoUrl) {
+        // An explicit post/reel page link — resolve it to a raw video URL.
+        dlUrl = await getVideoUrl(videoUrl).catch(() => '')
+        fallbackUrl = videoUrl
+      } else {
+        // No specific video given — pull their most recent post automatically
+        // instead of requiring Josh to dig one up and paste it separately.
+        // This is already a raw downloadable URL, not a page link.
+        dlUrl = await getRecentPostVideoUrl(igUrl || ttUrl || '', igUrl ? 'instagram' : 'tiktok')
+        fallbackUrl = dlUrl
+      }
+      if (!dlUrl && !fallbackUrl) throw new Error('Could not find a recent video to analyse')
+
       tmpPath = dlUrl
-        ? await downloadVideo(dlUrl).catch(() => downloadWithYtDlp(videoUrl))
-        : await downloadWithYtDlp(videoUrl)
-      const analysis = await analyseCreatorStyle(tmpPath, igData.name || ttData.name || '')
+        ? await downloadVideo(dlUrl).catch(() => downloadWithYtDlp(fallbackUrl))
+        : await downloadWithYtDlp(fallbackUrl)
+      const analysis = await analyseCreatorStyle(tmpPath, igData.name || ttData.name || '', note)
       styleNotes = analysis.notes
       categories = analysis.categories
       videoLocation = analysis.location
