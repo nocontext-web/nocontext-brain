@@ -23,6 +23,29 @@ function todayKey() {
   return new Date().toLocaleDateString('en-AU', { timeZone: 'Australia/Sydney' })
 }
 
+// The server's local timezone (UTC on most hosts) is not Sydney's, so naive
+// `setHours(0,0,0,0)` day-boundary math silently shifts by 10-11 hours and
+// can pull yesterday's or tomorrow's events into "today". Compute the actual
+// Sydney day boundaries as real UTC instants instead.
+function sydneyDayBoundsUTC(now: Date) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Australia/Sydney',
+    hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc }, {} as Record<string, string>)
+
+  const sydneyWallAsUTC = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour), Number(parts.minute), Number(parts.second)
+  )
+  const offsetMs = sydneyWallAsUTC - now.getTime()
+
+  const startOfDay = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 0, 0, 0, 0) - offsetMs)
+  const endOfDay = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 23, 59, 59, 999) - offsetMs)
+  return { startOfDay, endOfDay }
+}
+
 export async function POST() {
   // Backstop: only post within the morning window, Sydney time. This is meant to run
   // off the 9am cron in nocontext-slack — if it's ever hit outside this window (stray
@@ -34,24 +57,21 @@ export async function POST() {
     return NextResponse.json({ ok: true, skipped: true, reason: 'outside morning window' })
   }
 
+  const now = new Date()
+  const { startOfDay, endOfDay } = sydneyDayBoundsUTC(now)
+
   // Only post once per day — check if already done
   const { data: existing } = await supabase
     .from('agent_thoughts')
     .select('id')
     .eq('agent', 'caspar')
     .eq('type', 'morning_briefing')
-    .gte('created_at', new Date(new Date().setHours(0, 0, 0, 0)).toISOString())
+    .gte('created_at', startOfDay.toISOString())
     .limit(1)
 
   if (existing && existing.length > 0) {
     return NextResponse.json({ ok: true, skipped: true, reason: 'already posted today' })
   }
-
-  const now = new Date()
-  const startOfDay = new Date(now)
-  startOfDay.setHours(0, 0, 0, 0)
-  const endOfDay = new Date(now)
-  endOfDay.setHours(23, 59, 59, 999)
 
   const [eventsRes, emailsRes, todosRes, memoryRes] = await Promise.all([
     supabase
