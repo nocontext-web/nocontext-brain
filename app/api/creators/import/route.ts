@@ -70,7 +70,9 @@ async function scrapeTikTok(url: string) {
   const username = extractUsername(url)
   const data = await fetchFromApify('clockworks~tiktok-profile-scraper', {
     profiles: [`https://www.tiktok.com/@${username}`],
-    resultsPerPage: 0,
+    // The actor rejects 0 ("Field input.resultsPerPage must be >= 1") even
+    // though only profile stats are read below, not any posts it returns.
+    resultsPerPage: 1,
   })
   if (!data.length) throw new Error('No TikTok profile data returned')
   const p = data[0]
