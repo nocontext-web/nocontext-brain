@@ -1,19 +1,12 @@
 import { NextRequest } from 'next/server'
-import { GoogleAIFileManager, FileState } from '@google/generative-ai/server'
-import { GoogleGenerativeAI } from '@google/generative-ai'
 import Anthropic from '@anthropic-ai/sdk'
 import * as fs from 'fs'
-import * as os from 'os'
-import * as path from 'path'
-import { exec as execCb } from 'child_process'
-import { promisify } from 'util'
-
-const exec = promisify(execCb)
 import { supabase } from '@/lib/supabase'
 import { getCasparContext } from '@/lib/memory'
-
-const fileManager = new GoogleAIFileManager(process.env.GOOGLE_AI_API_KEY!)
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY!)
+import {
+  fetchFromApify, downloadVideo, downloadWithYtDlp,
+  analyseVideoWithGemini, extractSection, computeViralityScore,
+} from '@/lib/research-analysis'
 
 type VideoData = {
   platform: 'TikTok' | 'Instagram'
@@ -41,25 +34,6 @@ async function expandUrl(url: string): Promise<string> {
   } catch {
     return url
   }
-}
-
-async function fetchFromApify(actorId: string, input: object): Promise<any[]> {
-  const token = process.env.APIFY_API_KEY
-  const res = await fetch(
-    `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${token}&timeout=120`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    }
-  )
-  const data = await res.json().catch(() => null)
-  if (!res.ok || !Array.isArray(data)) {
-    const msg = data?.error?.message || data?.message || `Apify returned ${res.status}`
-    // Truncate long error messages — no raw JSON in the UI
-    throw new Error(String(msg).slice(0, 120))
-  }
-  return data
 }
 
 async function fetchTikTokData(url: string): Promise<VideoData> {
@@ -136,101 +110,6 @@ async function fetchInstagramData(url: string): Promise<VideoData> {
   }
 }
 
-async function downloadVideo(videoUrl: string): Promise<string> {
-  const tmpPath = path.join(os.tmpdir(), `nc_research_${Date.now()}.mp4`)
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-    'Accept': '*/*',
-  }
-  // TikTok CDN requires a Referer — Apify storage URLs don't need it
-  if (!videoUrl.includes('api.apify.com')) {
-    headers['Referer'] = 'https://www.tiktok.com/'
-  }
-  const res = await fetch(videoUrl, { headers })
-  if (!res.ok) throw new Error(`Failed to download video: ${res.status}`)
-  const buffer = await res.arrayBuffer()
-  fs.writeFileSync(tmpPath, Buffer.from(buffer))
-  return tmpPath
-}
-
-async function downloadWithYtDlp(url: string): Promise<string> {
-  const tmpPath = path.join(os.tmpdir(), `nc_ytdlp_${Date.now()}.mp4`)
-  try {
-    const { stderr } = await exec(
-      `python3 -m yt_dlp -o "${tmpPath}" --no-playlist -q --no-warnings ` +
-      `--user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" ` +
-      `"${url}"`,
-      { timeout: 90000 }
-    )
-    if (stderr) console.log('[yt-dlp stderr]', stderr)
-  } catch (err: unknown) {
-    const e = err as { stderr?: string; stdout?: string; message?: string }
-    const detail = e.stderr || e.stdout || e.message || String(err)
-    throw new Error(`yt-dlp failed: ${String(detail).slice(0, 300)}`)
-  }
-  if (!fs.existsSync(tmpPath)) throw new Error('yt-dlp: file not found after download')
-  return tmpPath
-}
-
-async function analyseWithGemini(videoPath: string, video: VideoData, casparContext: string): Promise<string> {
-  // Upload to Gemini Files API
-  const upload = await fileManager.uploadFile(videoPath, {
-    mimeType: 'video/mp4',
-    displayName: `nc_${Date.now()}`,
-  })
-
-  // Wait for Gemini to process the video
-  let file = await fileManager.getFile(upload.file.name)
-  let attempts = 0
-  while (file.state === FileState.PROCESSING && attempts < 30) {
-    await new Promise(r => setTimeout(r, 2000))
-    file = await fileManager.getFile(upload.file.name)
-    attempts++
-  }
-
-  if (file.state === FileState.FAILED) {
-    throw new Error('Gemini failed to process the video')
-  }
-
-  const model = genAI.getGenerativeModel({
-    model: 'gemini-2.5-flash',
-    systemInstruction: casparContext,
-  })
-
-  const result = await model.generateContent([
-    {
-      fileData: {
-        mimeType: upload.file.mimeType,
-        fileUri: upload.file.uri,
-      },
-    },
-    {
-      text: `Watch this entire ${video.platform} video — every second. ${video.views ? `${video.views.toLocaleString()} views, ${video.likes.toLocaleString()} likes.` : ''}
-${video.caption ? `Caption: "${video.caption}"` : ''}
-${video.author ? `Creator: @${video.author}` : ''}
-
-Watch it like a creative director who has to brief someone on how to steal it tomorrow. You're not summarising. You're diagnosing. What is it actually doing?
-
-Use this format exactly. No preamble. No bold. No markdown.
-
-HOOK: What literally happens in the first 2-3 seconds. The exact visual, action, text, or audio — not the theme, the actual thing that makes someone stop scrolling.
-
-FORMAT: How it's made. Handheld or tripod, single take or edited, direct-to-camera or observational, what the audio is doing. One short paragraph.
-
-WHY IT HITS: This is the most important section — write at least a full paragraph. Go beyond "it's relatable." What is the specific psychological or cultural mechanic at play? What tension does it create or release? What does the audience feel and at what exact moment — and why? If it's funny, name the specific type of funny (subverted expectation, absurd escalation, self-own, timing, contrast). If it's emotional, name the exact human truth. If it's satisfying, what itch does it scratch? What does this video understand about people that most content misses?
-
-THE PATTERN: Strip away the topic entirely. What's the underlying format mechanic? One sentence — clean enough to brief any brand.
-
-NO CONTEXT ANGLES: Don't apply this literally. Think about what this video is actually doing at a conceptual level — the intellectual move, the cultural shorthand, the structural trick. Then ask: what other subjects, industries, or brands could make that same move in a completely different context? The topic should change. The mechanic stays. For each angle: name the brand category or subject, explain how the same underlying move translates, and give one specific execution idea. These should feel surprising — not "a fitness brand does the same thing" but "here's an unexpected context where this exact type of thinking unlocks something".`,
-    },
-  ])
-
-  // Clean up the uploaded file
-  await fileManager.deleteFile(upload.file.name).catch(() => {})
-
-  return result.response.text()
-}
-
 async function analyseFromMetadata(video: VideoData, casparContext: string): Promise<string> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   const response = await anthropic.messages.create({
@@ -260,41 +139,25 @@ NO CONTEXT ANGLES: Don't apply this literally. Think about what this video is ac
   return response.content[0].type === 'text' ? response.content[0].text : ''
 }
 
-function extractSection(text: string, key: string): string {
-  const keys = ['HOOK', 'FORMAT', 'WHY IT HITS', 'THE PATTERN', 'NO CONTEXT ANGLES']
-  const escaped = keys.map(k => k.replace(/ /g, '\\s+'))
-  const pattern = new RegExp(`(${escaped.join('|')}):`, 'g')
-  const matches: { key: string; index: number }[] = []
-  let m
-  while ((m = pattern.exec(text)) !== null) {
-    matches.push({ key: m[1].replace(/\s+/g, ' '), index: m.index + m[0].length })
-  }
-  for (let i = 0; i < matches.length; i++) {
-    if (matches[i].key === key) {
-      const start = matches[i].index
-      const end = i + 1 < matches.length ? matches[i + 1].index - matches[i + 1].key.length - 1 : text.length
-      return text.slice(start, end).trim()
-    }
-  }
-  return ''
-}
-
 async function saveToMemory(video: VideoData, analysis: string): Promise<void> {
-  // Save structured row to research_patterns
-  await supabase.from('research_patterns').insert({
+  // Upsert on video_url — re-analysing something you already pasted before
+  // refreshes it instead of creating a second row.
+  await supabase.from('research_patterns').upsert({
     platform: video.platform,
     author: video.author || null,
     video_url: video.url,
     caption: video.caption || null,
     views: video.views || 0,
     likes: video.likes || 0,
+    shares: video.shares || 0,
+    virality_score: computeViralityScore({ views: video.views || 0, likes: video.likes || 0, shares: video.shares || 0, saves: 0, comments: video.comments || 0 }),
     hook: extractSection(analysis, 'HOOK'),
     format: extractSection(analysis, 'FORMAT'),
     why_it_popped: extractSection(analysis, 'WHY IT HITS'),
     pattern: extractSection(analysis, 'THE PATTERN'),
     no_context_angles: extractSection(analysis, 'NO CONTEXT ANGLES'),
     full_analysis: analysis,
-  })
+  }, { onConflict: 'video_url' })
 
   // Save a creative insight to the structured memories table
   const pattern = extractSection(analysis, 'THE PATTERN')
@@ -372,7 +235,7 @@ export async function POST(req: NextRequest) {
           }
 
           send({ url, status: 'analysing' })
-          analysis = await analyseWithGemini(tmpPath, videoData, casparContext)
+          analysis = await analyseVideoWithGemini(tmpPath, videoData, casparContext)
 
           // Auto-save to Caspar's memory — fire and forget, don't block the stream
           saveToMemory(videoData, analysis).catch(() => {})
