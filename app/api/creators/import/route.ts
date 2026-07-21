@@ -118,7 +118,7 @@ async function analyseCreatorStyle(
   videoPath: string,
   creatorName: string,
   requestedUseCase?: string
-): Promise<{ notes: string; categories: string[]; location: string }> {
+): Promise<{ notes: string; categories: string[]; city: string; country: string }> {
   const upload = await fileManager.uploadFile(videoPath, {
     mimeType: 'video/mp4',
     displayName: `nc_creator_${Date.now()}`,
@@ -139,7 +139,7 @@ async function analyseCreatorStyle(
   // fits *that*, not just describe them generically — and that use-case has
   // to come back out as a clean tag so it's actually findable later.
   const useCaseInstruction = requestedUseCase
-    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Your CATEGORIES must include a clean, short tag for that exact use-case (e.g. "how-to content", "usa ugc") in addition to any other tags you'd naturally add.`
+    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Your CATEGORIES must include a clean, short tag for that exact use-case (e.g. "how-to content", "usa ugc") in addition to any other tags you'd naturally add. If what Josh said implies a location (e.g. "NYC creator", "good UK creator"), treat that as your default CITY/COUNTRY unless the video clearly shows otherwise.`
     : ''
   const result = await model.generateContent([
     { fileData: { mimeType: upload.file.mimeType, fileUri: upload.file.uri } },
@@ -151,9 +151,11 @@ Respond in exactly this format, no markdown, no extra text before or after:
 
 NOTES: 3-4 sentences covering their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
 
-CATEGORIES: 2-4 short tags for what this creator is good for (e.g. comedy, talking head, founder story, lo-fi, high production, product demo, observational). Comma separated, lowercase, 1-3 words each.
+CATEGORIES: 2-4 short tags for what this creator is good for. Always include what *kind* of creator they are (e.g. comedian, lifestyle, foodie, fitness, beauty, finance, tech, founder, parenting, gaming) as well as their content style (e.g. talking head, founder story, lo-fi, high production, product demo, observational). Comma separated, lowercase, 1-3 words each.
 
-LOCATION: If they mention or it's visually obvious where they're based (city/region), name it. Otherwise write unknown.`,
+CITY: The specific city/region they appear to be based in, judged from accent, language, signage, landmarks, captions, or bio context visible in the video. If genuinely unclear, write unknown.
+
+COUNTRY: The country they appear to be based in, using the same evidence. If genuinely unclear, write unknown.`,
     },
   ])
 
@@ -165,8 +167,14 @@ LOCATION: If they mention or it's visually obvious where they're based (city/reg
     .split(',')
     .map(c => c.trim().toLowerCase())
     .filter(Boolean)
-  const location = extractField(text, 'LOCATION')
-  return { notes, categories, location: /^unknown$/i.test(location) ? '' : location }
+  const city = extractField(text, 'CITY')
+  const country = extractField(text, 'COUNTRY')
+  return {
+    notes,
+    categories,
+    city: /^unknown$/i.test(city) ? '' : city,
+    country: /^unknown$/i.test(country) ? '' : country,
+  }
 }
 
 // Josh sending just a profile link (no specific video) is the common case —
@@ -252,7 +260,8 @@ export async function POST(req: NextRequest) {
   // to back it up, not just get repeated back as a tag.
   let styleNotes = igData.bio || ''
   let categories: string[] = []
-  let videoLocation = ''
+  let videoCity = ''
+  let videoCountry = ''
   if (videoUrl || note) {
     let tmpPath: string | null = null
     try {
@@ -277,13 +286,20 @@ export async function POST(req: NextRequest) {
       const analysis = await analyseCreatorStyle(tmpPath, igData.name || ttData.name || '', note)
       styleNotes = analysis.notes
       categories = analysis.categories
-      videoLocation = analysis.location
+      videoCity = analysis.city
+      videoCountry = analysis.country
     } catch (e: any) {
       errors.push(`Video analysis: ${String(e.message).slice(0, 100)}`)
     } finally {
       if (tmpPath) fs.unlink(tmpPath, () => {})
     }
   }
+
+  // City comes from whichever source actually found one — the video analysis
+  // (accent/signage/captions) or Instagram's bio location field. Country only
+  // ever comes from the video analysis; neither scraper returns it.
+  const city = videoCity || igData.location || ''
+  const country = videoCountry || ''
 
   const creator = {
     name: igData.name || ttData.name || '',
@@ -292,7 +308,9 @@ export async function POST(req: NextRequest) {
     tt_handle: ttData.tt_handle || '',
     tt_followers: ttData.tt_followers || '',
     tier: inferTier(maxFollowers),
-    location: igData.location || videoLocation || '',
+    city,
+    country,
+    location: [city, country].filter(Boolean).join(', '),
     notes: styleNotes,
     // 'scouted' — this is Josh building out a personal rolodex of creators he
     // rates, not Ria's active outreach/deal pipeline. 'prospect' implies

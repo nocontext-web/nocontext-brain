@@ -13,6 +13,8 @@ type Creator = {
   tier: string
   categories: string[]
   location: string
+  city: string
+  country: string
   status: string
   notes: string
   creator_campaigns: Campaign[]
@@ -40,6 +42,10 @@ function statusLabel(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
+function locationLabel(c: Creator) {
+  return [c.city, c.country].filter(Boolean).join(', ') || c.location || ''
+}
+
 function detectUrlType(url: string): 'ig-profile' | 'tt-profile' | 'ig-video' | 'tt-video' | null {
   if (url.includes('instagram.com')) {
     // Video: contains /reel/ or /p/
@@ -56,6 +62,7 @@ function detectUrlType(url: string): 'ig-profile' | 'tt-profile' | 'ig-video' | 
 function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
   const [urls, setUrls] = useState<string[]>([])
   const [inputVal, setInputVal] = useState('')
+  const [note, setNote] = useState('')
   const [importing, setImporting] = useState(false)
   const [error, setError] = useState('')
   const [warnings, setWarnings] = useState<string[]>([])
@@ -94,13 +101,14 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
       const res = await fetch('/api/creators/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ igUrl: igProfile, ttUrl: ttProfile, videoUrl: video }),
+        body: JSON.stringify({ igUrl: igProfile, ttUrl: ttProfile, videoUrl: video, note: note.trim() || undefined }),
       })
       const json = await res.json()
       if (!res.ok) { setError(json.error || 'Import failed'); return }
       if (json.warnings?.length) setWarnings(json.warnings)
       onAdded(json.creator)
       setUrls([])
+      setNote('')
     } catch {
       setError('Something went wrong')
     } finally {
@@ -147,6 +155,14 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
         />
       </div>
 
+      <input
+        type="text"
+        value={note}
+        onChange={e => setNote(e.target.value)}
+        placeholder='Optional note — "good NYC comedian" — this steers the tags and location'
+        className="w-full bg-transparent border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors mb-3"
+      />
+
       {/* What's detected */}
       {urls.length > 0 && (
         <div className="flex flex-wrap gap-3 mb-3 text-[11px] font-mono text-[#8e8e93]">
@@ -171,71 +187,142 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
   )
 }
 
+function FilterList({
+  title, options, active, onSelect,
+}: {
+  title: string
+  options: { key: string; label: string; count: number }[]
+  active: string
+  onSelect: (key: string) => void
+}) {
+  if (options.length === 0) return null
+  return (
+    <div>
+      <p className="font-mono text-[10px] uppercase tracking-widest text-[#8e8e93] mb-1.5 px-3">{title}</p>
+      <div className="flex flex-col gap-1 max-h-[180px] overflow-y-auto">
+        {options.map(o => (
+          <button
+            key={o.key}
+            onClick={() => onSelect(active === o.key ? 'all' : o.key)}
+            className={`text-left px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
+              active === o.key
+                ? 'bg-black/[0.04] text-[#1c1c1e]'
+                : 'text-[#8e8e93] hover:text-[#6c6c70]'
+            }`}
+          >
+            {o.label}
+            <span className="float-right text-[#8e8e93]">{o.count}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function CreatorsPage() {
   const [creators, setCreators] = useState<Creator[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [countryFilter, setCountryFilter] = useState('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
   const [showAdd, setShowAdd] = useState(false)
 
   useEffect(() => {
-    fetch('/api/creators').then(r => r.json()).then(setCreators)
+    fetch('/api/creators')
+      .then(r => {
+        if (!r.ok) throw new Error('failed')
+        return r.json()
+      })
+      .then(data => setCreators(Array.isArray(data) ? data : []))
+      .catch(() => setLoadError(true))
+      .finally(() => setLoading(false))
   }, [])
+
+  const countryOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    creators.forEach(c => { if (c.country) counts.set(c.country, (counts.get(c.country) ?? 0) + 1) })
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, count]) => ({ key, label: key, count }))
+  }, [creators])
+
+  const categoryOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    creators.forEach(c => c.categories?.forEach(cat => counts.set(cat, (counts.get(cat) ?? 0) + 1)))
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([key, count]) => ({ key, label: key, count }))
+  }, [creators])
 
   const filtered = useMemo(() => {
     return creators.filter(c => {
-      const matchesSearch = !search || [c.name, c.ig_handle, c.tt_handle, c.location]
-        .some(v => v?.toLowerCase().includes(search.toLowerCase()))
+      const haystack = [c.name, c.ig_handle, c.tt_handle, c.city, c.country, c.location, ...(c.categories ?? [])]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+      const matchesSearch = !search || haystack.includes(search.toLowerCase())
       const matchesStatus = statusFilter === 'all' || c.status === statusFilter
-      return matchesSearch && matchesStatus
+      const matchesCountry = countryFilter === 'all' || c.country === countryFilter
+      const matchesCategory = categoryFilter === 'all' || c.categories?.includes(categoryFilter)
+      return matchesSearch && matchesStatus && matchesCountry && matchesCategory
     })
-  }, [creators, search, statusFilter])
+  }, [creators, search, statusFilter, countryFilter, categoryFilter])
 
   function handleAdded(creator: Creator) {
     setCreators(prev => [creator, ...prev])
     setShowAdd(false)
   }
 
+  const anyFilterActive = !!search || statusFilter !== 'all' || countryFilter !== 'all' || categoryFilter !== 'all'
+
   return (
     <div className="flex h-full bg-transparent">
       {/* Left panel */}
-      <div className="w-[300px] shrink-0 border-r border-black/[0.06] flex flex-col">
+      <div className="w-[300px] shrink-0 border-r border-black/[0.06] flex flex-col overflow-y-auto">
         <div className="px-6 pt-7 pb-5 border-b border-black/[0.06]">
           <p className="font-mono text-[10px] uppercase tracking-widest text-[#8e8e93] mb-1">Talent</p>
           <h1 className="text-lg font-semibold text-[#1c1c1e] tracking-tight">Creators</h1>
           <p className="text-xs text-[#8e8e93] mt-0.5">{creators.length} on roster</p>
         </div>
 
-        <div className="p-5 flex flex-col gap-3">
-          <input
-            type="text"
-            placeholder="Search..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-white border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors"
+        <div className="p-5 flex flex-col gap-5">
+          <div className="flex flex-col gap-3">
+            <input
+              type="text"
+              placeholder="Search name, handle, city, tag..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full bg-white border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors"
+            />
+            {anyFilterActive && (
+              <button
+                onClick={() => { setSearch(''); setStatusFilter('all'); setCountryFilter('all'); setCategoryFilter('all') }}
+                className="self-start text-[10px] font-mono uppercase tracking-widest text-[#8e8e93] hover:text-[#1c1c1e] transition-colors"
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+
+          <FilterList
+            title="Status"
+            active={statusFilter}
+            onSelect={setStatusFilter}
+            options={['all', ...STATUSES].map(s => ({
+              key: s,
+              label: s === 'all' ? 'All' : statusLabel(s),
+              count: s === 'all' ? creators.length : creators.filter(c => c.status === s).length,
+            }))}
           />
 
-          <div className="flex flex-col gap-1">
-            {['all', ...STATUSES].map(s => (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className={`text-left px-3 py-2 rounded-lg text-xs font-mono transition-colors ${
-                  statusFilter === s
-                    ? 'bg-black/[0.04] text-[#1c1c1e]'
-                    : 'text-[#8e8e93] hover:text-[#6c6c70]'
-                }`}
-              >
-                {s === 'all' ? 'All' : statusLabel(s)}
-                <span className="float-right text-[#8e8e93]">
-                  {s === 'all' ? creators.length : creators.filter(c => c.status === s).length}
-                </span>
-              </button>
-            ))}
-          </div>
+          <FilterList title="Location" active={countryFilter} onSelect={setCountryFilter} options={countryOptions} />
+          <FilterList title="Type" active={categoryFilter} onSelect={setCategoryFilter} options={categoryOptions} />
 
           <button
             onClick={() => setShowAdd(!showAdd)}
-            className="mt-2 w-full bg-[#EF22DA]/10 border border-[#EF22DA]/20 text-[#EF22DA] text-xs font-semibold py-2.5 rounded-xl hover:bg-[#EF22DA]/15 transition-colors"
+            className="w-full bg-[#EF22DA]/10 border border-[#EF22DA]/20 text-[#EF22DA] text-xs font-semibold py-2.5 rounded-xl hover:bg-[#EF22DA]/15 transition-colors"
           >
             + Add Creator
           </button>
@@ -246,10 +333,19 @@ export default function CreatorsPage() {
       <div className="flex-1 overflow-y-auto p-6">
         {showAdd && <ImportPanel onAdded={handleAdded} />}
 
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="h-full flex items-center justify-center">
+            <p className="text-sm text-[#8e8e93]">Loading...</p>
+          </div>
+        ) : loadError ? (
+          <div className="h-full flex flex-col items-center justify-center gap-1">
+            <p className="text-sm text-[#1c1c1e] font-medium">Couldn't load the roster</p>
+            <p className="text-xs text-[#8e8e93]">The creators table may be missing — check the Supabase schema.</p>
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center gap-3">
             <p className="text-sm text-[#8e8e93]">
-              {search || statusFilter !== 'all' ? 'No creators match' : 'No creators yet — add one above'}
+              {anyFilterActive ? 'No creators match' : 'No creators yet — add one above'}
             </p>
           </div>
         ) : (
@@ -258,7 +354,7 @@ export default function CreatorsPage() {
               <a
                 key={creator.id}
                 href={`/creators/${creator.id}`}
-                className="block bg-white border border-black/[0.07] rounded-2xl p-5 hover:border-black/[0.14] transition-colors group"
+                className="block bg-white border border-black/[0.07] rounded-2xl p-5 hover:border-black/[0.14] hover:shadow-sm transition-all group"
               >
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">
@@ -270,9 +366,12 @@ export default function CreatorsPage() {
                   )}
                 </div>
 
-                <h3 className="font-semibold text-[#1c1c1e] mb-3 group-hover:text-[#EF22DA] transition-colors">
-                  {creator.name}
+                <h3 className="font-semibold text-[#1c1c1e] mb-0.5 group-hover:text-[#EF22DA] transition-colors">
+                  {creator.name || 'Unnamed creator'}
                 </h3>
+                {locationLabel(creator) && (
+                  <p className="text-[11px] text-[#8e8e93] mb-3">{locationLabel(creator)}</p>
+                )}
 
                 <div className="space-y-1 mb-3">
                   {creator.ig_handle && (
@@ -290,10 +389,6 @@ export default function CreatorsPage() {
                     </div>
                   )}
                 </div>
-
-                {creator.location && (
-                  <p className="text-[11px] text-[#8e8e93] mb-2">{creator.location}</p>
-                )}
 
                 {creator.categories?.length > 0 && (
                   <div className="flex flex-wrap gap-1 mb-2">

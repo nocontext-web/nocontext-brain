@@ -27,6 +27,8 @@ type Creator = {
   tier: string
   categories: string[]
   location: string
+  city: string
+  country: string
   gender: string
   rate_notes: string
   notes: string
@@ -54,6 +56,10 @@ const TIER_LABEL: Record<string, string> = {
   mid: 'Mid-Tier 10k–200k',
   macro: 'Macro 200k–1M',
   celebrity: 'Celebrity 1M+',
+}
+
+function locationLabel(c: { city?: string; country?: string; location?: string }) {
+  return [c.city, c.country].filter(Boolean).join(', ') || c.location || ''
 }
 
 function statusLabel(s: string) {
@@ -97,10 +103,14 @@ export default function CreatorPage({ params }: { params: Promise<{ id: string }
 
   async function saveEdit() {
     setSaving(true)
+    // Keep the free-text `location` fallback (used by Hermes' Telegram
+    // replies and the roster cards) in sync with whatever city/country were
+    // just typed, instead of leaving it stale.
+    const payload = { ...editForm, location: [editForm.city, editForm.country].filter(Boolean).join(', ') }
     const res = await fetch(`/api/creators/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(editForm),
+      body: JSON.stringify(payload),
     })
     const data = await res.json()
     setCreator(data)
@@ -167,7 +177,7 @@ export default function CreatorPage({ params }: { params: Promise<{ id: string }
             )}
           </div>
           <h1 className="text-4xl font-bold text-black leading-tight">{creator.name}</h1>
-          {creator.location && <p className="text-neutral-500 text-sm mt-1">{creator.location}{creator.gender ? ` · ${creator.gender}` : ''}</p>}
+          {locationLabel(creator) && <p className="text-neutral-500 text-sm mt-1">{locationLabel(creator)}{creator.gender ? ` · ${creator.gender}` : ''}</p>}
         </div>
         <div className="flex gap-2">
           {editing ? (
@@ -273,8 +283,12 @@ export default function CreatorPage({ params }: { params: Promise<{ id: string }
                   <input className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" value={editForm.phone ?? ''} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value }))} />
                 </div>
                 <div>
-                  <label className="text-xs text-neutral-400 block mb-1">Location</label>
-                  <input className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" value={editForm.location ?? ''} onChange={e => setEditForm(f => ({ ...f, location: e.target.value }))} />
+                  <label className="text-xs text-neutral-400 block mb-1">City</label>
+                  <input className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" placeholder="e.g. New York" value={editForm.city ?? ''} onChange={e => setEditForm(f => ({ ...f, city: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="text-xs text-neutral-400 block mb-1">Country</label>
+                  <input className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" placeholder="e.g. USA" value={editForm.country ?? ''} onChange={e => setEditForm(f => ({ ...f, country: e.target.value }))} />
                 </div>
                 <div>
                   <label className="text-xs text-neutral-400 block mb-1">Gender</label>

@@ -35,6 +35,14 @@ export async function POST(req: NextRequest) {
         description:
           '"yes" if age could not be confirmed and must be verified before outreach, otherwise "no" — index-aligned with handles',
       },
+      city: {
+        type: 'array',
+        description: 'the city/region this creator appears to be based in, or empty string if unknown — index-aligned with handles',
+      },
+      country: {
+        type: 'array',
+        description: 'the country this creator appears to be based in, or empty string if unknown — index-aligned with handles',
+      },
     })
   } catch (err) {
     if (err instanceof LightreelError) {
@@ -52,6 +60,8 @@ export async function POST(req: NextRequest) {
     fit_reason = [],
     recent_median_views = [],
     needs_age_check = [],
+    city = [],
+    country = [],
   } = result.answer as Record<string, string[]>
 
   if (!handles.length) {
@@ -62,6 +72,9 @@ export async function POST(req: NextRequest) {
     name: handle.replace(/^@/, ''),
     ig_handle: platform[i] === 'instagram' ? handle : null,
     tt_handle: platform[i] === 'tiktok' ? handle : null,
+    city: city[i] || null,
+    country: country[i] || null,
+    location: [city[i], country[i]].filter(Boolean).join(', ') || null,
     status: 'scouted',
     notes: [
       `[Lightreel] Brief: ${brief}`,
