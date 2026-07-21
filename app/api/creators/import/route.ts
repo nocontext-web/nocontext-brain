@@ -182,8 +182,12 @@ COUNTRY: Pick the closest match from exactly this list: ${COUNTRIES.join(', ')}.
 async function getRecentPostVideoUrl(profileUrl: string, platform: 'instagram' | 'tiktok'): Promise<string> {
   const token = process.env.APIFY_API_KEY!
   if (platform === 'instagram') {
+    // Instagram share links carry a tracking query string (?igsh=...) that
+    // this actor's input validation rejects outright — strip down to the
+    // bare profile URL first, same as scrapeInstagram already does above.
+    const username = extractUsername(profileUrl)
     const data = await fetchFromApify('apify~instagram-scraper', {
-      directUrls: [profileUrl], resultsType: 'posts', resultsLimit: 1,
+      directUrls: [`https://www.instagram.com/${username}/`], resultsType: 'posts', resultsLimit: 1,
     })
     return data[0]?.videoUrl || data[0]?.videoSrc || ''
   }
