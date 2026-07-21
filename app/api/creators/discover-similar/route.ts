@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { askLightreelStructured, LightreelError } from '@/lib/lightreel'
+import { COUNTRIES, normalizeToList } from '@/lib/creator-taxonomy'
 
 // Same review gate as /api/creators/discover: Lightreel only ever proposes,
 // everything lands as 'scouted' for a human to promote before outreach.
@@ -16,6 +17,10 @@ export async function POST(req: NextRequest) {
     note || 'Find creators making similar content in the same hook/format style.'
   } For each recommended creator, give their handle, platform, a direct URL to one of their own videos in this same style, and why it fits the reference.`
 
+  // Lightreel's response_fields caps out at 5 — city and country used to be
+  // separate fields, which pushed this over the limit and was silently
+  // breaking every call (LightreelError before the request even went out).
+  // Combined into one "location" field to stay under the cap.
   let result: Awaited<ReturnType<typeof askLightreelStructured>>
   try {
     result = await askLightreelStructured(question, {
@@ -35,13 +40,9 @@ export async function POST(req: NextRequest) {
         type: 'array',
         description: 'one to two sentences on how this creator/video matches the reference\'s hook or format, citing specifics — index-aligned with handles',
       },
-      city: {
+      location: {
         type: 'array',
-        description: 'the city/region this creator appears to be based in, or empty string if unknown — index-aligned with handles',
-      },
-      country: {
-        type: 'array',
-        description: 'the country this creator appears to be based in, or empty string if unknown — index-aligned with handles',
+        description: 'the city and country this creator appears to be based in, formatted as "City, Country", or empty string if unknown — index-aligned with handles',
       },
     })
   } catch (err) {
@@ -56,31 +57,33 @@ export async function POST(req: NextRequest) {
     platform = [],
     similar_video_urls = [],
     fit_reason = [],
-    city = [],
-    country = [],
+    location = [],
   } = result.answer as Record<string, string[]>
 
   if (!handles.length) {
     return NextResponse.json({ creators: [], conversationId: result.conversationId })
   }
 
-  const rows = handles.map((handle, i) => ({
-    name: handle.replace(/^@/, ''),
-    ig_handle: platform[i] === 'instagram' ? handle : null,
-    tt_handle: platform[i] === 'tiktok' ? handle : null,
-    city: city[i] || null,
-    country: country[i] || null,
-    location: [city[i], country[i]].filter(Boolean).join(', ') || null,
-    status: 'scouted',
-    notes: [
-      `[Lightreel, similar to ${referenceUrl}]`,
-      fit_reason[i] ? `Fit: ${fit_reason[i]}` : null,
-      similar_video_urls[i] ? `Video: ${similar_video_urls[i]}` : null,
-      `Lightreel conversation: ${result.conversationId}`,
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  }))
+  const rows = handles.map((handle, i) => {
+    const [rawCity, rawCountry] = (location[i] || '').split(',').map(s => s.trim())
+    return {
+      name: handle.replace(/^@/, ''),
+      ig_handle: platform[i] === 'instagram' ? handle : null,
+      tt_handle: platform[i] === 'tiktok' ? handle : null,
+      city: rawCity || null,
+      country: normalizeToList(rawCountry, COUNTRIES),
+      location: location[i] || null,
+      status: 'scouted',
+      notes: [
+        `[Lightreel, similar to ${referenceUrl}]`,
+        fit_reason[i] ? `Fit: ${fit_reason[i]}` : null,
+        similar_video_urls[i] ? `Video: ${similar_video_urls[i]}` : null,
+        `Lightreel conversation: ${result.conversationId}`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    }
+  })
 
   const { data, error } = await supabase.from('creators').insert(rows).select()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })

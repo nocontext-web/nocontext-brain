@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { supabase } from '@/lib/supabase'
+import { CREATOR_TYPES, COUNTRIES, normalizeToList, normalizeCategories } from '@/lib/creator-taxonomy'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -139,7 +140,7 @@ async function analyseCreatorStyle(
   // fits *that*, not just describe them generically — and that use-case has
   // to come back out as a clean tag so it's actually findable later.
   const useCaseInstruction = requestedUseCase
-    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Your CATEGORIES must include a clean, short tag for that exact use-case (e.g. "how-to content", "usa ugc") in addition to any other tags you'd naturally add. If what Josh said implies a location (e.g. "NYC creator", "good UK creator"), treat that as your default CITY/COUNTRY unless the video clearly shows otherwise.`
+    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Make sure your CATEGORIES pick includes whichever value from the fixed list best matches what Josh said, even if his phrasing was more specific (e.g. "how-to content" → closest is probably Lifestyle, Home & Renovation, Fitness etc. depending on the topic — use judgement). If what Josh said implies a location (e.g. "NYC creator", "good UK creator"), treat that as your default CITY/COUNTRY unless the video clearly shows otherwise.`
     : ''
   const result = await model.generateContent([
     { fileData: { mimeType: upload.file.mimeType, fileUri: upload.file.uri } },
@@ -151,11 +152,11 @@ Respond in exactly this format, no markdown, no extra text before or after:
 
 NOTES: 3-4 sentences covering their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
 
-CATEGORIES: 2-4 short tags for what this creator is good for. Always include what *kind* of creator they are (e.g. comedian, lifestyle, foodie, fitness, beauty, finance, tech, founder, parenting, gaming) as well as their content style (e.g. talking head, founder story, lo-fi, high production, product demo, observational). Comma separated, lowercase, 1-3 words each.
+CATEGORIES: Pick 1-4 values from exactly this list, comma separated, that best describe what this creator is good for: ${CREATOR_TYPES.join(', ')}. Do not invent new categories — pick the closest fits from that list only.
 
 CITY: The specific city/region they appear to be based in, judged from accent, language, signage, landmarks, captions, or bio context visible in the video. If genuinely unclear, write unknown.
 
-COUNTRY: The country they appear to be based in, using the same evidence. If genuinely unclear, write unknown.`,
+COUNTRY: Pick the closest match from exactly this list: ${COUNTRIES.join(', ')}. If genuinely unclear, write unknown.`,
     },
   ])
 
@@ -163,17 +164,15 @@ COUNTRY: The country they appear to be based in, using the same evidence. If gen
   const text = result.response.text().trim()
 
   const notes = extractField(text, 'NOTES') || text
-  const categories = extractField(text, 'CATEGORIES')
-    .split(',')
-    .map(c => c.trim().toLowerCase())
-    .filter(Boolean)
+  const rawCategories = extractField(text, 'CATEGORIES').split(',').map(c => c.trim()).filter(Boolean)
+  const categories = normalizeCategories(rawCategories)
   const city = extractField(text, 'CITY')
-  const country = extractField(text, 'COUNTRY')
+  const country = normalizeToList(extractField(text, 'COUNTRY'), COUNTRIES)
   return {
     notes,
     categories,
     city: /^unknown$/i.test(city) ? '' : city,
-    country: /^unknown$/i.test(country) ? '' : country,
+    country: country ?? '',
   }
 }
 

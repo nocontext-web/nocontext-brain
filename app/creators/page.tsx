@@ -1,6 +1,8 @@
 'use client'
 
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { CREATOR_TYPES, COUNTRIES } from '@/lib/creator-taxonomy'
+import { FacetFilter } from '@/app/components/FacetFilter'
 
 type Campaign = { id: string; client_name: string; status: string }
 type Creator = {
@@ -59,7 +61,7 @@ function detectUrlType(url: string): 'ig-profile' | 'tt-profile' | 'ig-video' | 
   return null
 }
 
-function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
+function ImportTab({ onAdded }: { onAdded: (creator: Creator) => void }) {
   const [urls, setUrls] = useState<string[]>([])
   const [inputVal, setInputVal] = useState('')
   const [note, setNote] = useState('')
@@ -122,9 +124,7 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
   const hasProfile = !!(igProfile || ttProfile)
 
   return (
-    <div className="bg-white border border-black/[0.07] rounded-2xl p-5 mb-6">
-      <p className="font-mono text-[10px] uppercase tracking-widest text-[#8e8e93] mb-3">Add Creator</p>
-
+    <div>
       {/* URL chips + input */}
       <div
         className="min-h-[60px] bg-transparent border border-black/[0.07] rounded-xl p-3 flex flex-wrap gap-2 cursor-text focus-within:border-black/[0.14] transition-colors mb-3"
@@ -163,7 +163,6 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
         className="w-full bg-transparent border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors mb-3"
       />
 
-      {/* What's detected */}
       {urls.length > 0 && (
         <div className="flex flex-wrap gap-3 mb-3 text-[11px] font-mono text-[#8e8e93]">
           {igProfile && <span className="text-[#EF22DA]/60">✓ Instagram profile</span>}
@@ -187,34 +186,141 @@ function ImportPanel({ onAdded }: { onAdded: (creator: Creator) => void }) {
   )
 }
 
-function FilterList({
-  title, options, active, onSelect,
-}: {
-  title: string
-  options: { key: string; label: string; count: number }[]
-  active: string
-  onSelect: (key: string) => void
-}) {
-  if (options.length === 0) return null
+function LightreelResultList({ result }: { result: { creators: Creator[]; conversationId?: string } | null }) {
+  if (!result) return null
+  if (!result.creators.length) {
+    return <p className="text-xs text-[#8e8e93] font-mono mt-3">No matches came back for that one.</p>
+  }
+  return (
+    <div className="mt-3 flex flex-col gap-1.5">
+      <p className="text-[11px] text-[#8e8e93] font-mono">Filed {result.creators.length} as scouted — review below.</p>
+      {result.creators.map(c => (
+        <div key={c.id} className="text-xs text-[#3a3a3c] bg-black/[0.02] rounded-lg px-3 py-2">
+          <span className="font-medium">{c.name || 'Unnamed'}</span>
+          {c.ig_handle && <span className="text-[#8e8e93] ml-2">{c.ig_handle}</span>}
+          {c.tt_handle && <span className="text-[#8e8e93] ml-2">{c.tt_handle}</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FindTab({ onAdded }: { onAdded: (creators: Creator[]) => void }) {
+  const [mode, setMode] = useState<'brief' | 'similar'>('brief')
+  const [brief, setBrief] = useState('')
+  const [referenceUrl, setReferenceUrl] = useState('')
+  const [note, setNote] = useState('')
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<{ creators: Creator[]; conversationId?: string } | null>(null)
+
+  async function run() {
+    setError('')
+    setResult(null)
+    setRunning(true)
+    try {
+      const res = await fetch(mode === 'brief' ? '/api/creators/discover' : '/api/creators/discover-similar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mode === 'brief' ? { brief } : { referenceUrl, note: note.trim() || undefined }),
+      })
+      const json = await res.json()
+      if (!res.ok) { setError(json.error || 'Lightreel search failed'); return }
+      setResult({ creators: json.creators ?? [], conversationId: json.conversationId })
+      if (json.creators?.length) onAdded(json.creators)
+    } catch {
+      setError('Something went wrong')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const canRun = mode === 'brief' ? brief.trim().length > 0 : referenceUrl.trim().length > 0
+
   return (
     <div>
-      <p className="font-mono text-[10px] uppercase tracking-widest text-[#8e8e93] mb-1.5 px-3">{title}</p>
-      <div className="flex flex-col gap-1 max-h-[180px] overflow-y-auto">
-        {options.map(o => (
+      <div className="flex gap-1 mb-3">
+        {(['brief', 'similar'] as const).map(m => (
           <button
-            key={o.key}
-            onClick={() => onSelect(active === o.key ? 'all' : o.key)}
-            className={`text-left px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
-              active === o.key
-                ? 'bg-black/[0.04] text-[#1c1c1e]'
-                : 'text-[#8e8e93] hover:text-[#6c6c70]'
+            key={m}
+            onClick={() => { setMode(m); setResult(null); setError('') }}
+            className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-colors ${
+              mode === m ? 'bg-black/[0.05] text-[#1c1c1e]' : 'text-[#8e8e93] hover:text-[#6c6c70]'
             }`}
           >
-            {o.label}
-            <span className="float-right text-[#8e8e93]">{o.count}</span>
+            {m === 'brief' ? 'From a brief' : 'Similar to a video'}
           </button>
         ))}
       </div>
+
+      {mode === 'brief' ? (
+        <textarea
+          value={brief}
+          onChange={e => setBrief(e.target.value)}
+          placeholder='e.g. "good NYC comedian, TikTok, 50k+ followers, talking-head style"'
+          rows={2}
+          className="w-full bg-transparent border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors mb-3 resize-none"
+        />
+      ) : (
+        <>
+          <input
+            type="text"
+            value={referenceUrl}
+            onChange={e => setReferenceUrl(e.target.value)}
+            placeholder="Paste a TikTok or Instagram video URL"
+            className="w-full bg-transparent border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors mb-3"
+          />
+          <input
+            type="text"
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            placeholder="Optional — what to look for (default: same hook/format style)"
+            className="w-full bg-transparent border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors mb-3"
+          />
+        </>
+      )}
+
+      {error && <p className="text-xs text-red-400/70 font-mono mb-3">{error}</p>}
+
+      <button
+        onClick={run}
+        disabled={!canRun || running}
+        className="bg-[#EF22DA] text-black text-sm font-bold px-4 py-2 rounded-lg disabled:opacity-25 hover:opacity-90 transition-all active:scale-[0.98]"
+      >
+        {running ? 'Lightreel is searching…' : 'Search with Lightreel'}
+      </button>
+      {running && (
+        <p className="text-[11px] text-[#8e8e93] font-mono mt-2">
+          This is a live research agent, not a lookup — it can genuinely take a few minutes.
+        </p>
+      )}
+
+      <LightreelResultList result={result} />
+    </div>
+  )
+}
+
+function AddPanel({ onAdded }: { onAdded: (creators: Creator[]) => void }) {
+  const [tab, setTab] = useState<'import' | 'find'>('import')
+
+  return (
+    <div className="bg-white border border-black/[0.07] rounded-2xl p-5 mb-6 animate-slide-up">
+      <div className="flex gap-1 mb-4">
+        {(['import', 'find'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              tab === t ? 'bg-[#EF22DA]/10 text-[#EF22DA]' : 'text-[#8e8e93] hover:text-[#6c6c70]'
+            }`}
+          >
+            {t === 'import' ? 'Import a link' : 'Find with Lightreel'}
+          </button>
+        ))}
+      </div>
+      {tab === 'import'
+        ? <ImportTab onAdded={c => onAdded([c])} />
+        : <FindTab onAdded={onAdded} />}
     </div>
   )
 }
@@ -225,8 +331,8 @@ export default function CreatorsPage() {
   const [loadError, setLoadError] = useState(false)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
-  const [countryFilter, setCountryFilter] = useState('all')
-  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [countryFilter, setCountryFilter] = useState<string[]>([])
+  const [typeFilter, setTypeFilter] = useState<string[]>([])
   const [showAdd, setShowAdd] = useState(false)
 
   useEffect(() => {
@@ -240,21 +346,15 @@ export default function CreatorsPage() {
       .finally(() => setLoading(false))
   }, [])
 
-  const countryOptions = useMemo(() => {
-    const counts = new Map<string, number>()
-    creators.forEach(c => { if (c.country) counts.set(c.country, (counts.get(c.country) ?? 0) + 1) })
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([key, count]) => ({ key, label: key, count }))
-  }, [creators])
+  const countryOptions = useMemo(
+    () => COUNTRIES.map(c => ({ key: c, label: c, count: creators.filter(cr => cr.country === c).length })),
+    [creators]
+  )
 
-  const categoryOptions = useMemo(() => {
-    const counts = new Map<string, number>()
-    creators.forEach(c => c.categories?.forEach(cat => counts.set(cat, (counts.get(cat) ?? 0) + 1)))
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([key, count]) => ({ key, label: key, count }))
-  }, [creators])
+  const typeOptions = useMemo(
+    () => CREATOR_TYPES.map(t => ({ key: t, label: t, count: creators.filter(cr => cr.categories?.includes(t)).length })),
+    [creators]
+  )
 
   const filtered = useMemo(() => {
     return creators.filter(c => {
@@ -264,18 +364,24 @@ export default function CreatorsPage() {
         .toLowerCase()
       const matchesSearch = !search || haystack.includes(search.toLowerCase())
       const matchesStatus = statusFilter === 'all' || c.status === statusFilter
-      const matchesCountry = countryFilter === 'all' || c.country === countryFilter
-      const matchesCategory = categoryFilter === 'all' || c.categories?.includes(categoryFilter)
-      return matchesSearch && matchesStatus && matchesCountry && matchesCategory
+      const matchesCountry = countryFilter.length === 0 || countryFilter.includes(c.country)
+      const matchesType = typeFilter.length === 0 || typeFilter.some(t => c.categories?.includes(t))
+      return matchesSearch && matchesStatus && matchesCountry && matchesType
     })
-  }, [creators, search, statusFilter, countryFilter, categoryFilter])
+  }, [creators, search, statusFilter, countryFilter, typeFilter])
 
-  function handleAdded(creator: Creator) {
-    setCreators(prev => [creator, ...prev])
-    setShowAdd(false)
+  function handleAdded(added: Creator[]) {
+    setCreators(prev => [...added, ...prev])
   }
 
-  const anyFilterActive = !!search || statusFilter !== 'all' || countryFilter !== 'all' || categoryFilter !== 'all'
+  const anyFilterActive = !!search || statusFilter !== 'all' || countryFilter.length > 0 || typeFilter.length > 0
+
+  function clearFilters() {
+    setSearch('')
+    setStatusFilter('all')
+    setCountryFilter([])
+    setTypeFilter([])
+  }
 
   return (
     <div className="flex h-full bg-transparent">
@@ -288,17 +394,17 @@ export default function CreatorsPage() {
         </div>
 
         <div className="p-5 flex flex-col gap-5">
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 px-1">
             <input
               type="text"
-              placeholder="Search name, handle, city, tag..."
+              placeholder="Search name, handle, city..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               className="w-full bg-white border border-black/[0.07] rounded-xl px-3 py-2.5 text-xs text-[#1c1c1e] placeholder:text-[#8e8e93] focus:outline-none focus:border-black/[0.14] transition-colors"
             />
             {anyFilterActive && (
               <button
-                onClick={() => { setSearch(''); setStatusFilter('all'); setCountryFilter('all'); setCategoryFilter('all') }}
+                onClick={clearFilters}
                 className="self-start text-[10px] font-mono uppercase tracking-widest text-[#8e8e93] hover:text-[#1c1c1e] transition-colors"
               >
                 Clear filters
@@ -306,19 +412,28 @@ export default function CreatorsPage() {
             )}
           </div>
 
-          <FilterList
-            title="Status"
-            active={statusFilter}
-            onSelect={setStatusFilter}
-            options={['all', ...STATUSES].map(s => ({
-              key: s,
-              label: s === 'all' ? 'All' : statusLabel(s),
-              count: s === 'all' ? creators.length : creators.filter(c => c.status === s).length,
-            }))}
-          />
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-[#8e8e93] mb-1.5 px-3">Status</p>
+            <div className="flex flex-col gap-1">
+              {['all', ...STATUSES].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`text-left px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${
+                    statusFilter === s ? 'bg-black/[0.04] text-[#1c1c1e]' : 'text-[#8e8e93] hover:text-[#6c6c70]'
+                  }`}
+                >
+                  {s === 'all' ? 'All' : statusLabel(s)}
+                  <span className="float-right text-[#8e8e93]">
+                    {s === 'all' ? creators.length : creators.filter(c => c.status === s).length}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
 
-          <FilterList title="Location" active={countryFilter} onSelect={setCountryFilter} options={countryOptions} />
-          <FilterList title="Type" active={categoryFilter} onSelect={setCategoryFilter} options={categoryOptions} />
+          <FacetFilter title="Country" options={countryOptions} selected={countryFilter} onChange={setCountryFilter} />
+          <FacetFilter title="Type" options={typeOptions} selected={typeFilter} onChange={setTypeFilter} />
 
           <button
             onClick={() => setShowAdd(!showAdd)}
@@ -331,11 +446,17 @@ export default function CreatorsPage() {
 
       {/* Right panel */}
       <div className="flex-1 overflow-y-auto p-6">
-        {showAdd && <ImportPanel onAdded={handleAdded} />}
+        {showAdd && <AddPanel onAdded={handleAdded} />}
 
         {loading ? (
-          <div className="h-full flex items-center justify-center">
-            <p className="text-sm text-[#8e8e93]">Loading...</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} className="rounded-2xl border border-black/[0.07] bg-white p-5 flex flex-col gap-3">
+                <div className="shimmer h-3 w-16 rounded" />
+                <div className="shimmer h-4 w-32 rounded" />
+                <div className="shimmer h-3 w-24 rounded" />
+              </div>
+            ))}
           </div>
         ) : loadError ? (
           <div className="h-full flex flex-col items-center justify-center gap-1">
@@ -354,7 +475,7 @@ export default function CreatorsPage() {
               <a
                 key={creator.id}
                 href={`/creators/${creator.id}`}
-                className="block bg-white border border-black/[0.07] rounded-2xl p-5 hover:border-black/[0.14] hover:shadow-sm transition-all group"
+                className="block bg-white border border-black/[0.07] rounded-2xl p-5 hover:border-black/[0.14] hover:shadow-sm transition-all group animate-slide-up"
               >
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-1.5">

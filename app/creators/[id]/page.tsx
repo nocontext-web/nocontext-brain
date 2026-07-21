@@ -2,6 +2,7 @@
 
 import { useState, useEffect, use } from 'react'
 import Link from 'next/link'
+import { CREATOR_TYPES, COUNTRIES } from '@/lib/creator-taxonomy'
 
 type Campaign = {
   id: string
@@ -36,10 +37,6 @@ type Creator = {
   creator_campaigns: Campaign[]
 }
 
-const CATEGORIES = [
-  'Home & Renovation', 'Lifestyle', 'Food & Travel', 'Fashion & Beauty',
-  'Fitness', 'Comedy', 'Parenting', 'Business', 'Gaming', 'Tech', 'Podcast',
-]
 const DELIVERABLES = ['IG Reel', 'IG Story', 'IG Post', 'TikTok Reel', 'TikTok Story', 'YouTube Video', 'YouTube Short', 'UGC (no posting)', 'Podcast']
 const STATUSES = ['prospect', 'active', 'complete', 'fell_through']
 const TIERS = ['micro', 'mid', 'macro', 'celebrity']
@@ -288,7 +285,10 @@ export default function CreatorPage({ params }: { params: Promise<{ id: string }
                 </div>
                 <div>
                   <label className="text-xs text-neutral-400 block mb-1">Country</label>
-                  <input className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" placeholder="e.g. USA" value={editForm.country ?? ''} onChange={e => setEditForm(f => ({ ...f, country: e.target.value }))} />
+                  <select className="w-full bg-[#F2F2F2] border border-[#D5D5D5] rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-black" value={editForm.country ?? ''} onChange={e => setEditForm(f => ({ ...f, country: e.target.value }))}>
+                    <option value="">—</option>
+                    {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label className="text-xs text-neutral-400 block mb-1">Gender</label>
@@ -336,7 +336,7 @@ export default function CreatorPage({ params }: { params: Promise<{ id: string }
             <p className="font-mono text-xs uppercase tracking-widest text-neutral-400 mb-3">Categories</p>
             {editing ? (
               <div className="flex flex-wrap gap-1.5">
-                {CATEGORIES.map(cat => (
+                {CREATOR_TYPES.map(cat => (
                   <button
                     key={cat}
                     onClick={() => toggleEditCategory(cat)}
