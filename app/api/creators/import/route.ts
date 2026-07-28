@@ -229,6 +229,23 @@ async function getVideoUrl(url: string): Promise<string> {
   return ''
 }
 
+// Checked before any scraping/Gemini work happens — re-filing a creator
+// already in the rolodex would otherwise burn Apify + Gemini credits on a
+// second scrape and leave a duplicate row behind.
+async function findExistingCreator(igUrl?: string, ttUrl?: string) {
+  const igHandle = igUrl ? `@${extractUsername(igUrl)}` : null
+  const ttHandle = ttUrl ? `@${extractUsername(ttUrl)}` : null
+  if (!igHandle && !ttHandle) return null
+
+  let query = supabase.from('creators').select('id, name, ig_handle, tt_handle, status').limit(1)
+  if (igHandle && ttHandle) query = query.or(`ig_handle.eq.${igHandle},tt_handle.eq.${ttHandle}`)
+  else if (igHandle) query = query.eq('ig_handle', igHandle)
+  else query = query.eq('tt_handle', ttHandle!)
+
+  const { data } = await query
+  return data?.[0] ?? null
+}
+
 export async function POST(req: NextRequest) {
   const { igUrl, ttUrl, videoUrl, note } = await req.json() as {
     igUrl?: string; ttUrl?: string; videoUrl?: string; note?: string
@@ -236,6 +253,11 @@ export async function POST(req: NextRequest) {
 
   if (!igUrl && !ttUrl) {
     return NextResponse.json({ error: 'Provide at least one profile URL' }, { status: 400 })
+  }
+
+  const existing = await findExistingCreator(igUrl, ttUrl)
+  if (existing) {
+    return NextResponse.json({ duplicate: true, creator: existing })
   }
 
   const igData: Record<string, any> = {}
