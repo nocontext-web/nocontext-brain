@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
@@ -8,7 +9,9 @@ const oauth2Client = new google.auth.OAuth2(
 )
 
 export async function GET() {
+  const state = randomBytes(32).toString('hex')
   const url = oauth2Client.generateAuthUrl({
+    state,
     access_type: 'offline',
     prompt: 'consent',
     scope: [
@@ -17,5 +20,7 @@ export async function GET() {
       'https://www.googleapis.com/auth/userinfo.email',
     ],
   })
-  return NextResponse.redirect(url)
+  const response = NextResponse.redirect(url)
+  response.cookies.set('google_oauth_state', state, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 600, path: '/api/auth/google' })
+  return response
 }

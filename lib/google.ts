@@ -2,8 +2,13 @@ import { google } from 'googleapis'
 import { supabase } from './supabase'
 
 export async function getAuthClient() {
-  const { data } = await supabase.from('google_tokens').select('*').limit(1).single()
-  if (!data) throw new Error('Google not connected')
+  let query = supabase.from('google_tokens').select('*')
+  if (process.env.GOOGLE_ACCOUNT_EMAIL) query = query.eq('email', process.env.GOOGLE_ACCOUNT_EMAIL)
+  const { data: accounts, error } = await query.limit(2)
+  if (error) throw new Error('Google connection could not be read')
+  if (!accounts?.length) throw new Error('Google not connected')
+  if (accounts.length !== 1) throw new Error('Choose the Google account with GOOGLE_ACCOUNT_EMAIL')
+  const data = accounts[0]
 
   const oauth2Client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,

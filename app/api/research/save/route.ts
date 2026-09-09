@@ -1,3 +1,4 @@
+import { appendStandingMemory } from '@/lib/standing-memory'
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 
@@ -22,19 +23,10 @@ export async function POST(req: NextRequest) {
   })
 
   // Also append to Caspar's memory blob (keeps backward compat)
-  const { data: current } = await supabase
-    .from('agent_memory')
-    .select('content')
-    .eq('agent', 'caspar')
-    .single()
-
-  const existing = current?.content || ''
   const date = new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
   const entry = `\n\n---\n[CONTENT PATTERN — ${date}]\nPlatform: ${result.platform} · @${result.author}\n${result.analysis}\n---`
 
-  await supabase
-    .from('agent_memory')
-    .upsert({ agent: 'caspar', content: existing + entry }, { onConflict: 'agent' })
+  await appendStandingMemory('caspar', entry)
 
   return NextResponse.json({ ok: true })
 }

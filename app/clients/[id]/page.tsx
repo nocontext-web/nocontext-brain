@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, use, useRef } from 'react'
+import { useState, useEffect, use } from 'react'
 import Link from 'next/link'
 
 type Client = {
@@ -11,471 +11,612 @@ type Client = {
   tiktok?: string
   brief?: string
   notes?: string
-  north_star?: string
-  research_notes?: string
   status?: string
   monthly_value?: number
   next_action?: string
 }
 
-type ResearchPattern = {
+type Email = {
   id: string
-  platform: string
-  author: string
-  hook: string
-  pattern: string
-  why_it_popped: string
-  no_context_angles: string
+  subject: string
+  from_address: string
+  received_at: string
+  priority: string
+  needs_attention: boolean
+  reason: string
+  suggested_reply?: string
+  status: string
+}
+
+type Meeting = {
+  id: string
+  content: string
+  type: string
+  related_client: string
   created_at: string
+  tags?: string[]
+}
+
+type CalEvent = {
+  id: string
+  title: string
+  start_time: string
+  end_time: string
+  location?: string
+  attendees?: string[]
+}
+
+type Todo = {
+  id: string
+  content: string
+  created_at: string
+}
+
+type VideoAnalysis = {
+  hook_type: string
+  hook_line: string
+  format: string
+  what_works: string[]
+  why_it_pops: string
+  angles_for_client: string[]
+}
+
+const STATUS_OPTIONS = ['active', 'prospect', 'paused', 'churned']
+const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
+  active:   { dot: 'bg-emerald-400', label: 'Active' },
+  prospect: { dot: 'bg-amber-400',   label: 'Prospect' },
+  paused:   { dot: 'bg-zinc-300',    label: 'Paused' },
+  churned:  { dot: 'bg-red-300',     label: 'Churned' },
+}
+
+function SectionHeader({ label, count }: { label: string; count?: number }) {
+  return (
+    <div className="flex items-center gap-3 mb-4">
+      <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2]">{label}</p>
+      {count !== undefined && count > 0 && (
+        <span className="text-[10px] font-mono text-[#c7c7cc]">{count}</span>
+      )}
+      <div className="flex-1 h-px bg-black/[0.05]" />
+    </div>
+  )
+}
+
+function dateStr(iso: string) {
+  return new Date(iso).toLocaleDateString('en-AU', {
+    weekday: 'short', day: 'numeric', month: 'short',
+    timeZone: 'Australia/Sydney',
+  })
+}
+
+function timeStr(iso: string) {
+  return new Date(iso).toLocaleTimeString('en-AU', {
+    hour: '2-digit', minute: '2-digit',
+    timeZone: 'Australia/Sydney',
+  })
+}
+
+function relativeDate(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const days = Math.floor(diff / 86400000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  if (days < 7) return `${days}d ago`
+  return dateStr(iso)
 }
 
 export default function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+
   const [client, setClient] = useState<Client | null>(null)
-  const [tab, setTab] = useState<'brief' | 'research' | 'chat'>('brief')
-  const [researching, setResearching] = useState(false)
-  const [researchLog, setResearchLog] = useState<string[]>([])
-  const [patterns, setPatterns] = useState<ResearchPattern[]>([])
-  const [brief, setBrief] = useState('')
+  const [emails, setEmails] = useState<Email[]>([])
+  const [meetings, setMeetings] = useState<Meeting[]>([])
+  const [calendar, setCalendar] = useState<CalEvent[]>([])
+  const [todos, setTodos] = useState<Todo[]>([])
+  const [activityLoaded, setActivityLoaded] = useState(false)
+
+  // Editing state
+  const [editingNextAction, setEditingNextAction] = useState(false)
+  const [nextActionDraft, setNextActionDraft] = useState('')
+  const [editingNotes, setEditingNotes] = useState(false)
+  const [notesDraft, setNotesDraft] = useState('')
+  const [editingStatus, setEditingStatus] = useState(false)
+  const [editingBrief, setEditingBrief] = useState(false)
+  const [briefDraft, setBriefDraft] = useState('')
+  const [saving, setSaving] = useState(false)
   const [briefSaved, setBriefSaved] = useState(false)
-  const [dropInput, setDropInput] = useState('')
-  const [dropping, setDropping] = useState(false)
-  const [chatInput, setChatInput] = useState('')
-  const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
-  const [chatLoading, setChatLoading] = useState(false)
-  const chatBottomRef = useRef<HTMLDivElement>(null)
-  const [editing, setEditing] = useState<Partial<Client>>({})
-  const [savingField, setSavingField] = useState(false)
+
+  // Video analysis
+  const [videoUrl, setVideoUrl] = useState('')
+  const [analyzing, setAnalyzing] = useState(false)
+  const [videoAnalysis, setVideoAnalysis] = useState<VideoAnalysis | null>(null)
+  const [videoError, setVideoError] = useState('')
 
   useEffect(() => {
-    fetch(`/api/clients/${id}`).then(r => r.json()).then((c: Client) => {
-      setClient(c)
-      setBrief(c.brief || '')
-    })
-    // Load research patterns for this client
-    const sb = process.env.NEXT_PUBLIC_SUPABASE_URL!
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    fetch(`${sb}/rest/v1/research_patterns?client_id=eq.${id}&order=created_at.desc&limit=20`, {
-      headers: { apikey: key, Authorization: `Bearer ${key}` },
-    }).then(r => r.json()).then(d => setPatterns(Array.isArray(d) ? d : []))
+    fetch(`/api/clients/${id}`)
+      .then(r => r.json())
+      .then((c: Client) => {
+        setClient(c)
+        setBriefDraft(c.brief ?? '')
+        setNotesDraft(c.notes ?? '')
+        setNextActionDraft(c.next_action ?? '')
+      })
+
+    fetch(`/api/clients/${id}/activity`)
+      .then(r => r.json())
+      .then(data => {
+        setEmails(data.emails ?? [])
+        setMeetings(data.meetings ?? [])
+        setCalendar(data.calendar ?? [])
+        setTodos(data.todos ?? [])
+        setActivityLoaded(true)
+      })
   }, [id])
 
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  async function runResearch() {
-    setResearching(true)
-    setResearchLog([])
-    setTab('research')
-    const data = await fetch(`/api/clients/${id}/research`, { method: 'POST' }).then(r => r.json())
-    setResearchLog(data.log || [])
-    if (data.brief) { setBrief(data.brief); setClient(prev => prev ? { ...prev, brief: data.brief } : prev) }
-    setResearching(false)
-  }
-
-  async function dropContent() {
-    if (!dropInput.trim()) return
-    setDropping(true)
-    const data = await fetch(`/api/clients/${id}/research`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: dropInput.trim() }),
-    }).then(r => r.json())
-    setResearchLog(prev => [...prev, ...(data.log || [])])
-    if (data.brief) { setBrief(data.brief); setClient(prev => prev ? { ...prev, brief: data.brief } : prev) }
-    setDropInput('')
-    setDropping(false)
-    setTab('research')
-  }
-
-  async function saveBrief() {
-    await fetch(`/api/clients/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brief }),
-    })
-    setBriefSaved(true)
-    setTimeout(() => setBriefSaved(false), 2000)
-  }
-
-  async function saveField(field: string, value: string) {
-    setSavingField(true)
+  async function saveField(field: string, value: string | number) {
+    setSaving(true)
     const updated = await fetch(`/api/clients/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [field]: value }),
     }).then(r => r.json())
     setClient(updated)
-    setEditing({})
-    setSavingField(false)
+    setSaving(false)
   }
 
-  async function sendChat() {
-    if (!chatInput.trim() || chatLoading) return
-    const userMsg = chatInput.trim()
-    setChatInput('')
-    const newHistory = [...messages, { role: 'user' as const, content: userMsg }]
-    setMessages([...newHistory, { role: 'assistant', content: '' }])
-    setChatLoading(true)
+  async function saveBrief() {
+    setSaving(true)
+    await fetch(`/api/clients/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brief: briefDraft }),
+    })
+    setClient(prev => prev ? { ...prev, brief: briefDraft } : prev)
+    setBriefSaved(true)
+    setEditingBrief(false)
+    setSaving(false)
+    setTimeout(() => setBriefSaved(false), 2000)
+  }
 
-    const res = await fetch(`/api/clients/${id}/chat`, {
+  async function analyzeVideo() {
+    if (!videoUrl.trim()) return
+    setAnalyzing(true)
+    setVideoError('')
+    setVideoAnalysis(null)
+    const res = await fetch(`/api/clients/${id}/analyze-video`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: userMsg, history: messages }),
-    })
-
-    if (!res.body) { setChatLoading(false); return }
-
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let reply = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      reply += decoder.decode(value, { stream: true })
-      setMessages([...newHistory, { role: 'assistant', content: reply }])
+      body: JSON.stringify({ url: videoUrl.trim() }),
+    }).then(r => r.json())
+    if (res.ok) {
+      setVideoAnalysis(res.analysis)
+    } else {
+      setVideoError(res.error ?? 'Analysis failed')
     }
-
-    setChatLoading(false)
+    setAnalyzing(false)
   }
 
   if (!client) {
     return (
-      <div className="p-8 flex flex-col gap-3">
-        <div className="h-3 bg-black/[0.04] rounded w-16 animate-pulse" />
-        <div className="h-6 bg-black/[0.04] rounded w-48 animate-pulse" />
-        <div className="h-4 bg-black/[0.04] rounded w-64 animate-pulse mt-2" />
+      <div className="p-8 flex flex-col gap-3 animate-pulse">
+        <div className="h-3 bg-black/[0.04] rounded w-16" />
+        <div className="h-7 bg-black/[0.04] rounded w-48" />
+        <div className="h-4 bg-black/[0.04] rounded w-64 mt-2" />
       </div>
     )
   }
 
+  const status = STATUS_STYLES[client.status ?? 'active'] ?? STATUS_STYLES.active
   const igClean = client.instagram?.replace('@', '')
   const ttClean = client.tiktok?.replace('@', '')
+  const urgentEmails = emails.filter(e => e.priority === 'high' && e.status === 'unread')
+  const otherEmails = emails.filter(e => !(e.priority === 'high' && e.status === 'unread'))
 
   return (
     <div className="flex h-full">
 
-      {/* Left sidebar — client info */}
-      <div className="w-72 shrink-0 border-r border-black/[0.06] flex flex-col bg-white/60 overflow-y-auto">
-        <div className="p-6 border-b border-black/[0.05]">
+      {/* Sidebar */}
+      <div className="w-64 shrink-0 border-r border-black/[0.06] bg-white/60 flex flex-col overflow-y-auto">
+        <div className="p-5 border-b border-black/[0.05]">
           <Link href="/clients" className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2] hover:text-[#6c6c70] flex items-center gap-1 mb-5 w-fit">
             ← Clients
           </Link>
 
           {/* Avatar + name */}
-          <div className="flex items-center gap-3 mb-5">
-            <div className="w-12 h-12 rounded-2xl bg-[#EF22DA]/[0.08] border border-[#EF22DA]/[0.15] flex items-center justify-center text-xl font-bold text-[#EF22DA] shrink-0">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-11 h-11 rounded-2xl bg-[#EF22DA]/[0.08] border border-[#EF22DA]/[0.15] flex items-center justify-center text-lg font-bold text-[#EF22DA] shrink-0">
               {client.name[0].toUpperCase()}
             </div>
-            <div>
-              <h1 className="text-[16px] font-semibold text-[#1c1c1e] leading-tight">{client.name}</h1>
+            <div className="min-w-0">
+              <h1 className="text-[15px] font-semibold text-[#1c1c1e] leading-tight truncate">{client.name}</h1>
               {client.monthly_value && (
-                <p className="text-[12px] text-[#6c6c70] mt-0.5">${client.monthly_value.toLocaleString()}<span className="text-[#aeaeb2]">/mo</span></p>
+                <p className="text-[12px] text-[#6c6c70]">${client.monthly_value.toLocaleString()}<span className="text-[#aeaeb2]">/mo</span></p>
               )}
             </div>
           </div>
 
+          {/* Status */}
+          {editingStatus ? (
+            <div className="flex flex-col gap-1 mb-4 p-2 bg-white border border-black/[0.07] rounded-xl">
+              {STATUS_OPTIONS.map(s => (
+                <button
+                  key={s}
+                  onClick={async () => {
+                    await saveField('status', s)
+                    setEditingStatus(false)
+                  }}
+                  className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] text-left hover:bg-black/[0.04] ${client.status === s ? 'font-semibold' : ''}`}
+                >
+                  <div className={`w-1.5 h-1.5 rounded-full ${STATUS_STYLES[s].dot}`} />
+                  {STATUS_STYLES[s].label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <button
+              onClick={() => setEditingStatus(true)}
+              className="flex items-center gap-2 mb-4 px-2 py-1 rounded-lg hover:bg-black/[0.04] transition-colors -ml-2"
+            >
+              <div className={`w-1.5 h-1.5 rounded-full ${status.dot}`} />
+              <span className="text-[11px] font-mono text-[#6c6c70]">{status.label}</span>
+            </button>
+          )}
+
           {/* Handles */}
-          <div className="flex flex-col gap-2 mb-5">
+          <div className="flex flex-col gap-1.5 mb-4">
             {client.instagram && (
               <a href={`https://instagram.com/${igClean}`} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2.5 px-3 py-2 bg-black/[0.03] border border-black/[0.06] rounded-xl hover:border-black/[0.12] hover:bg-black/[0.05] transition-all group">
-                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-5">IG</span>
-                <span className="text-[12px] text-[#3a3a3c] font-mono group-hover:text-[#EF22DA] transition-colors">{client.instagram}</span>
-                <span className="ml-auto text-[#aeaeb2] text-xs group-hover:text-[#EF22DA]">↗</span>
+                className="flex items-center gap-2 px-2.5 py-2 bg-black/[0.03] border border-black/[0.05] rounded-xl hover:border-black/[0.10] group transition-all">
+                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-4">IG</span>
+                <span className="text-[11px] text-[#3a3a3c] font-mono group-hover:text-[#EF22DA] transition-colors truncate">{client.instagram}</span>
+                <span className="ml-auto text-[#c7c7cc] text-xs shrink-0">↗</span>
               </a>
             )}
             {client.tiktok && (
               <a href={`https://tiktok.com/@${ttClean}`} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2.5 px-3 py-2 bg-black/[0.03] border border-black/[0.06] rounded-xl hover:border-black/[0.12] hover:bg-black/[0.05] transition-all group">
-                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-5">TT</span>
-                <span className="text-[12px] text-[#3a3a3c] font-mono group-hover:text-[#EF22DA] transition-colors">{client.tiktok}</span>
-                <span className="ml-auto text-[#aeaeb2] text-xs group-hover:text-[#EF22DA]">↗</span>
+                className="flex items-center gap-2 px-2.5 py-2 bg-black/[0.03] border border-black/[0.05] rounded-xl hover:border-black/[0.10] group transition-all">
+                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-4">TT</span>
+                <span className="text-[11px] text-[#3a3a3c] font-mono group-hover:text-[#EF22DA] transition-colors truncate">{client.tiktok}</span>
+                <span className="ml-auto text-[#c7c7cc] text-xs shrink-0">↗</span>
               </a>
             )}
             {client.website && (
               <a href={client.website} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2.5 px-3 py-2 bg-black/[0.03] border border-black/[0.06] rounded-xl hover:border-black/[0.12] hover:bg-black/[0.05] transition-all group">
-                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-5">WEB</span>
+                className="flex items-center gap-2 px-2.5 py-2 bg-black/[0.03] border border-black/[0.05] rounded-xl hover:border-black/[0.10] group transition-all">
+                <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] w-4">↗</span>
                 <span className="text-[11px] text-[#3a3a3c] font-mono truncate group-hover:text-[#EF22DA] transition-colors">
                   {client.website.replace(/https?:\/\/(www\.)?/, '')}
                 </span>
-                <span className="ml-auto text-[#aeaeb2] text-xs shrink-0 group-hover:text-[#EF22DA]">↗</span>
               </a>
             )}
           </div>
+        </div>
 
-          {/* Missing handles prompt */}
-          {(!client.instagram || !client.tiktok) && (
-            <div className="text-[11px] text-[#aeaeb2] bg-black/[0.02] border border-black/[0.05] rounded-xl px-3 py-2 mb-4">
-              {!client.instagram && !client.tiktok ? 'Add IG + TikTok handles to enable research' :
-               !client.instagram ? 'Add Instagram handle' : 'Add TikTok handle'}
-              {' '}
-              <button onClick={() => setEditing({ instagram: client.instagram || '', tiktok: client.tiktok || '' })}
-                className="text-[#EF22DA] underline underline-offset-2">Edit</button>
-            </div>
-          )}
-
-          {/* Edit handles inline */}
-          {(editing.instagram !== undefined || editing.tiktok !== undefined) && (
-            <div className="flex flex-col gap-2 mb-4 p-3 bg-white border border-black/[0.07] rounded-xl">
-              <input
-                value={editing.instagram ?? client.instagram ?? ''}
-                onChange={e => setEditing(p => ({ ...p, instagram: e.target.value }))}
-                placeholder="@instagram"
-                className="bg-black/[0.03] border border-black/[0.07] rounded-lg px-3 py-1.5 text-[12px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none font-mono"
-              />
-              <input
-                value={editing.tiktok ?? client.tiktok ?? ''}
-                onChange={e => setEditing(p => ({ ...p, tiktok: e.target.value }))}
-                placeholder="@tiktok"
-                className="bg-black/[0.03] border border-black/[0.07] rounded-lg px-3 py-1.5 text-[12px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none font-mono"
+        {/* Context notes */}
+        <div className="p-5 border-b border-black/[0.05]">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2] mb-2">Notes</p>
+          {editingNotes ? (
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={notesDraft}
+                onChange={e => setNotesDraft(e.target.value)}
+                placeholder="Who's the contact, what's worked, what to avoid…"
+                rows={5}
+                autoFocus
+                className="w-full bg-white border border-black/[0.07] rounded-xl px-3 py-2 text-[12px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none resize-none leading-relaxed"
               />
               <div className="flex gap-2">
                 <button
-                  onClick={async () => {
-                    setSavingField(true)
-                    const updated = await fetch(`/api/clients/${id}`, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ instagram: editing.instagram, tiktok: editing.tiktok }),
-                    }).then(r => r.json())
-                    setClient(updated)
-                    setEditing({})
-                    setSavingField(false)
-                  }}
-                  disabled={savingField}
+                  onClick={async () => { await saveField('notes', notesDraft); setEditingNotes(false) }}
+                  disabled={saving}
                   className="text-[11px] bg-[#EF22DA] text-white font-semibold px-3 py-1 rounded-lg disabled:opacity-40"
                 >
-                  {savingField ? 'Saving…' : 'Save'}
+                  {saving ? '…' : 'Save'}
                 </button>
-                <button onClick={() => setEditing({})} className="text-[11px] text-[#aeaeb2]">Cancel</button>
+                <button onClick={() => { setNotesDraft(client.notes ?? ''); setEditingNotes(false) }} className="text-[11px] text-[#aeaeb2]">Cancel</button>
               </div>
             </div>
+          ) : (
+            <button
+              onClick={() => setEditingNotes(true)}
+              className="w-full text-left px-3 py-2.5 bg-black/[0.02] border border-dashed border-black/[0.06] rounded-xl text-[12px] text-[#aeaeb2] hover:border-black/[0.12] hover:text-[#6c6c70] transition-all leading-relaxed"
+            >
+              {client.notes || '+ Add context notes…'}
+            </button>
           )}
-
-          {/* Context notes */}
-          <div className="mb-4">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2] mb-1.5">Context notes</p>
-            {editing.notes !== undefined ? (
-              <div className="flex flex-col gap-2">
-                <textarea
-                  value={editing.notes}
-                  onChange={e => setEditing(p => ({ ...p, notes: e.target.value }))}
-                  placeholder="Who is the founder, what's worked before, what to avoid, key contacts…"
-                  rows={4}
-                  className="w-full bg-white border border-black/[0.07] rounded-xl px-3 py-2 text-[12px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none resize-none leading-relaxed"
-                />
-                <div className="flex gap-2">
-                  <button onClick={() => saveField('notes', editing.notes ?? '')} disabled={savingField}
-                    className="text-[11px] bg-[#EF22DA] text-white font-semibold px-3 py-1 rounded-lg disabled:opacity-40">
-                    {savingField ? 'Saving…' : 'Save'}
-                  </button>
-                  <button onClick={() => setEditing({})} className="text-[11px] text-[#aeaeb2]">Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <button
-                onClick={() => setEditing({ notes: client.notes ?? '' })}
-                className="w-full text-left px-3 py-2.5 bg-black/[0.02] border border-black/[0.06] border-dashed rounded-xl text-[12px] text-[#aeaeb2] hover:border-black/[0.12] hover:text-[#6c6c70] transition-all"
-              >
-                {client.notes || '+ Add context notes…'}
-              </button>
-            )}
-          </div>
-
-          {/* Drop URL */}
-          <div className="flex gap-2 mb-4">
-            <input value={dropInput} onChange={e => setDropInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && dropContent()}
-              placeholder="Drop a URL…"
-              className="flex-1 bg-white border border-black/[0.07] rounded-xl px-3 py-2 text-[12px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none focus:border-black/[0.15] font-mono min-w-0"
-            />
-            <button onClick={dropContent} disabled={dropping || !dropInput.trim()}
-              className="px-3 py-2 bg-black/[0.04] border border-black/[0.07] rounded-xl text-[11px] text-[#6c6c70] hover:border-black/[0.14] disabled:opacity-40 shrink-0">
-              {dropping ? '…' : 'Drop'}
-            </button>
-          </div>
-
-          {/* Actions */}
-          <div className="flex flex-col gap-2">
-            <button onClick={runResearch} disabled={researching}
-              className="w-full py-2.5 bg-black/[0.04] border border-black/[0.07] rounded-xl text-[13px] font-semibold text-[#3a3a3c] hover:bg-black/[0.07] hover:border-black/[0.12] disabled:opacity-40 transition-all">
-              {researching ? 'Researching…' : '↻ Run Research'}
-            </button>
-            <Link href={`/ideate?clientId=${id}`}
-              className="w-full py-2.5 bg-[#EF22DA]/[0.07] border border-[#EF22DA]/[0.15] rounded-xl text-[13px] font-semibold text-[#EF22DA] hover:bg-[#EF22DA]/[0.12] transition-all text-center">
-              Ideate →
-            </Link>
-          </div>
         </div>
 
-        {/* Stats */}
-        <div className="p-5 flex flex-col gap-3">
-          <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2]">At a Glance</p>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[12px] text-[#aeaeb2]">Brief</span>
-              <span className={`text-[11px] font-mono ${client.brief ? 'text-emerald-500' : 'text-[#aeaeb2]'}`}>
-                {client.brief ? '✓ Ready' : 'Not set'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[12px] text-[#aeaeb2]">Research patterns</span>
-              <span className="text-[11px] font-mono text-[#6c6c70]">{patterns.length}</span>
-            </div>
-            {client.next_action && (
-              <div className="mt-2 p-3 bg-amber-50 border border-amber-100 rounded-xl">
-                <p className="text-[10px] font-mono uppercase tracking-widest text-amber-400 mb-1">Next action</p>
-                <p className="text-[12px] text-[#3a3a3c]">{client.next_action}</p>
-              </div>
-            )}
-          </div>
+        {/* Quick links */}
+        <div className="p-5">
+          <Link
+            href={`/ideate?clientId=${id}`}
+            className="w-full flex items-center justify-center gap-2 py-2.5 bg-[#EF22DA]/[0.07] border border-[#EF22DA]/[0.15] rounded-xl text-[12px] font-semibold text-[#EF22DA] hover:bg-[#EF22DA]/[0.12] transition-all"
+          >
+            Ideate →
+          </Link>
         </div>
       </div>
 
-      {/* Right — tabbed content */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Tab bar */}
-        <div className="px-8 pt-6 pb-0 border-b border-black/[0.06] flex items-center gap-0">
-          {(['brief', 'research', 'chat'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-5 py-3 text-[13px] font-medium border-b-2 transition-colors ${
-                tab === t ? 'border-[#EF22DA] text-[#1c1c1e]' : 'border-transparent text-[#8e8e93] hover:text-[#3a3a3c]'
-              }`}>
-              {t === 'brief' ? 'Brand Brief' : t === 'research' ? `Research${patterns.length > 0 ? ` (${patterns.length})` : ''}` : 'Ask Caspar'}
-            </button>
-          ))}
-        </div>
+      {/* Main content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 py-8 flex flex-col gap-10">
 
-        <div className="flex-1 overflow-y-auto p-8">
-
-          {/* BRIEF TAB */}
-          {tab === 'brief' && (
-            <div className="max-w-2xl">
-              {!brief && (
-                <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-100 rounded-xl text-sm text-amber-700 mb-5">
-                  <span>No brief yet.</span>
-                  <button onClick={runResearch} disabled={researching}
-                    className="font-semibold underline underline-offset-2 disabled:opacity-40">
-                    Run Research →
-                  </button>
-                </div>
-              )}
-              <textarea value={brief} onChange={e => setBrief(e.target.value)}
-                placeholder="Write or paste the brand brief here…"
-                className="w-full h-[calc(100vh-320px)] min-h-64 bg-white border border-black/[0.07] rounded-2xl p-5 text-[13px] text-[#3a3a3c] leading-relaxed resize-none focus:outline-none focus:border-black/[0.14] placeholder:text-[#aeaeb2] shadow-[0_1px_4px_rgba(0,0,0,0.04)]"
-              />
-              <button onClick={saveBrief}
-                className="mt-3 bg-[#EF22DA] text-white text-[13px] font-semibold px-5 py-2.5 rounded-xl hover:opacity-90 shadow-[0_1px_3px_rgba(239,34,218,0.25)]">
-                {briefSaved ? '✓ Saved' : 'Save Brief'}
-              </button>
-            </div>
-          )}
-
-          {/* RESEARCH TAB */}
-          {tab === 'research' && (
-            <div className="max-w-2xl flex flex-col gap-6">
-              {/* Research patterns from DB */}
-              {patterns.length > 0 && (
-                <div>
-                  <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2] mb-3">Saved Research Patterns</p>
-                  <div className="flex flex-col gap-3">
-                    {patterns.map((p, i) => (
-                      <div key={p.id} className="bg-white border border-black/[0.07] rounded-2xl p-4 animate-fade-up shadow-[0_1px_4px_rgba(0,0,0,0.04)]" style={{ animationDelay: `${i * 20}ms` }}>
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2]">{p.platform}</span>
-                          {p.author && <span className="text-[11px] text-[#6c6c70]">@{p.author}</span>}
-                        </div>
-                        {p.hook && <p className="text-[13px] font-semibold text-[#1c1c1e] mb-1.5 leading-snug">"{p.hook}"</p>}
-                        {p.pattern && <p className="text-[12px] text-[#6c6c70] mb-1.5 leading-relaxed">{p.pattern}</p>}
-                        {p.no_context_angles && (
-                          <p className="text-[11px] text-[#EF22DA]/70 leading-relaxed">{p.no_context_angles}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Research log */}
-              {(researchLog.length > 0 || researching) && (
-                <div>
-                  <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2] mb-3">Research Log</p>
-                  {researching && <p className="text-[12px] text-[#6c6c70] animate-pulse mb-2">Analysing sources…</p>}
-                  <div className="flex flex-col gap-1.5">
-                    {researchLog.map((log, i) => (
-                      <div key={i} className="px-3 py-2 bg-white border border-black/[0.06] rounded-xl text-[12px] text-[#3a3a3c] font-mono animate-fade-up" style={{ animationDelay: `${i * 20}ms` }}>
-                        {log}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {patterns.length === 0 && researchLog.length === 0 && !researching && (
-                <div className="text-center py-16">
-                  <p className="text-[#aeaeb2] text-sm mb-3">No research yet for {client.name}.</p>
-                  <p className="text-[12px] text-[#c7c7cc]">Run research to scrape their website, or drop TikTok/IG video URLs to analyse their content patterns.</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* CHAT TAB */}
-          {tab === 'chat' && (
-            <div className="max-w-2xl flex flex-col h-full" style={{ height: 'calc(100vh - 200px)' }}>
-              <div className="flex-1 overflow-y-auto flex flex-col gap-3 pb-4">
-                {messages.length === 0 && (
-                  <div className="flex flex-col gap-2 pt-2">
-                    <p className="text-[11px] text-[#aeaeb2] font-mono uppercase tracking-widest mb-1">Ask about {client.name}</p>
-                    {[
-                      'What content angles should we focus on?',
-                      'What does their audience care about?',
-                      'Give me 5 hook ideas for their next campaign.',
-                    ].map(s => (
-                      <button key={s} onClick={() => setChatInput(s)}
-                        className="text-left text-[12px] text-[#6c6c70] px-4 py-2.5 bg-white border border-black/[0.06] rounded-xl hover:border-black/[0.12] hover:text-[#1c1c1e] transition-all shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {messages.map((m, i) => (
-                  <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-up`}>
-                    <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-[13px] leading-relaxed whitespace-pre-wrap ${
-                      m.role === 'user'
-                        ? 'bg-[#EF22DA] text-white rounded-br-sm'
-                        : 'bg-white border border-black/[0.07] text-[#3a3a3c] rounded-bl-sm shadow-[0_1px_3px_rgba(0,0,0,0.04)]'
-                    }`}>
-                      {m.content || (chatLoading && i === messages.length - 1 && m.role === 'assistant' ? (
-                        <span className="flex gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#EF22DA] animate-pulse" />
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#EF22DA] animate-pulse" style={{ animationDelay: '150ms' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-[#EF22DA] animate-pulse" style={{ animationDelay: '300ms' }} />
-                        </span>
-                      ) : '')}
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatBottomRef} />
-              </div>
-              <div className="flex gap-2 items-end shrink-0 border-t border-black/[0.05] pt-4">
-                <textarea value={chatInput} onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat() } }}
-                  placeholder={`Ask Caspar about ${client.name}…`}
-                  rows={2}
-                  className="flex-1 bg-white border border-black/[0.07] rounded-xl px-4 py-3 text-[13px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none focus:border-black/[0.15] resize-none shadow-[0_1px_3px_rgba(0,0,0,0.03)]"
+          {/* NEXT ACTION */}
+          <section>
+            <SectionHeader label="Next Action" />
+            {editingNextAction ? (
+              <div className="flex gap-2 items-start">
+                <input
+                  value={nextActionDraft}
+                  onChange={e => setNextActionDraft(e.target.value)}
+                  onKeyDown={async e => {
+                    if (e.key === 'Enter') {
+                      await saveField('next_action', nextActionDraft)
+                      setClient(prev => prev ? { ...prev, next_action: nextActionDraft } : prev)
+                      setEditingNextAction(false)
+                    }
+                    if (e.key === 'Escape') setEditingNextAction(false)
+                  }}
+                  autoFocus
+                  placeholder="What needs to happen next with this client?"
+                  className="flex-1 bg-white border border-black/[0.10] rounded-xl px-4 py-3 text-[14px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none focus:border-[#EF22DA]/40"
                 />
-                <button onClick={sendChat} disabled={chatLoading || !chatInput.trim()}
-                  className="w-9 h-9 rounded-xl bg-[#EF22DA] flex items-center justify-center text-white disabled:opacity-30 hover:opacity-90 self-end shadow-[0_1px_3px_rgba(239,34,218,0.25)]">
-                  <span className="text-xs">↑</span>
+                <button
+                  onClick={async () => {
+                    await saveField('next_action', nextActionDraft)
+                    setClient(prev => prev ? { ...prev, next_action: nextActionDraft } : prev)
+                    setEditingNextAction(false)
+                  }}
+                  className="px-4 py-3 bg-[#EF22DA] text-white text-[13px] font-semibold rounded-xl hover:opacity-90"
+                >
+                  Save
                 </button>
               </div>
-            </div>
+            ) : (
+              <button
+                onClick={() => { setNextActionDraft(client.next_action ?? ''); setEditingNextAction(true) }}
+                className={`w-full text-left px-4 py-4 rounded-2xl border transition-all ${
+                  client.next_action
+                    ? 'bg-amber-50 border-amber-100 hover:border-amber-200'
+                    : 'bg-black/[0.02] border-dashed border-black/[0.07] hover:border-black/[0.14]'
+                }`}
+              >
+                {client.next_action ? (
+                  <div className="flex items-start gap-3">
+                    <div className="w-2 h-2 rounded-full bg-amber-400 mt-1.5 shrink-0" />
+                    <span className="text-[14px] text-[#1c1c1e] leading-snug">{client.next_action}</span>
+                  </div>
+                ) : (
+                  <span className="text-[13px] text-[#aeaeb2]">+ Set next action…</span>
+                )}
+              </button>
+            )}
+          </section>
+
+          {/* UPCOMING MEETINGS */}
+          {(calendar.length > 0 || !activityLoaded) && (
+            <section>
+              <SectionHeader label="Upcoming" count={calendar.length} />
+              {!activityLoaded ? (
+                <div className="flex flex-col gap-2">
+                  {[1,2].map(i => <div key={i} className="h-14 bg-black/[0.03] rounded-xl animate-pulse" />)}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {calendar.map(ev => (
+                    <div key={ev.id} className="flex items-center gap-4 px-4 py-3 bg-white border border-black/[0.06] rounded-xl">
+                      <div className="text-center shrink-0 w-10">
+                        <p className="text-[10px] font-mono text-[#EF22DA]/70 uppercase">
+                          {new Date(ev.start_time).toLocaleDateString('en-AU', { month: 'short', timeZone: 'Australia/Sydney' })}
+                        </p>
+                        <p className="text-[18px] font-semibold text-[#1c1c1e] leading-tight">
+                          {new Date(ev.start_time).getDate()}
+                        </p>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[13px] font-medium text-[#1c1c1e] truncate">{ev.title}</p>
+                        <p className="text-[11px] text-[#aeaeb2] mt-0.5">
+                          {timeStr(ev.start_time)}{ev.location ? ` · ${ev.location}` : ''}
+                        </p>
+                      </div>
+                      {ev.attendees && ev.attendees.length > 1 && (
+                        <span className="text-[10px] font-mono text-[#c7c7cc] shrink-0">{ev.attendees.length} people</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
           )}
+
+          {/* EMAILS */}
+          {(emails.length > 0 || !activityLoaded) && (
+            <section>
+              <SectionHeader label="Emails" count={emails.length} />
+              {!activityLoaded ? (
+                <div className="flex flex-col gap-2">
+                  {[1,2].map(i => <div key={i} className="h-16 bg-black/[0.03] rounded-xl animate-pulse" />)}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {[...urgentEmails, ...otherEmails].map(email => (
+                    <div
+                      key={email.id}
+                      className={`px-4 py-3.5 rounded-xl border ${
+                        email.priority === 'high' && email.status === 'unread'
+                          ? 'bg-white border-[#EF22DA]/20 shadow-[0_1px_4px_rgba(239,34,218,0.06)]'
+                          : 'bg-white border-black/[0.06]'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${email.priority === 'high' ? 'bg-[#EF22DA]' : 'bg-black/[0.12]'}`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-baseline gap-2">
+                            <p className="text-[13px] font-medium text-[#1c1c1e] truncate">{email.subject}</p>
+                            <span className="text-[10px] text-[#aeaeb2] shrink-0">{relativeDate(email.received_at)}</span>
+                          </div>
+                          <p className="text-[11px] text-[#aeaeb2] mt-0.5">{email.from_address.replace(/<.*?>/, '').trim()}</p>
+                          {email.suggested_reply && (
+                            <p className="text-[12px] text-[#EF22DA]/70 mt-1.5 leading-snug">→ {email.suggested_reply}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* MEETING NOTES */}
+          {(meetings.length > 0 || !activityLoaded) && (
+            <section>
+              <SectionHeader label="Meeting Notes" count={meetings.length} />
+              {!activityLoaded ? (
+                <div className="flex flex-col gap-2">
+                  {[1,2,3].map(i => <div key={i} className="h-10 bg-black/[0.03] rounded-xl animate-pulse" />)}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {meetings.map(m => (
+                    <div key={m.id} className="flex items-start gap-3 px-4 py-3 bg-white border border-black/[0.06] rounded-xl">
+                      <div className="w-1.5 h-1.5 rounded-full bg-blue-300 mt-1.5 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[13px] text-[#3a3a3c] leading-snug">{m.content}</p>
+                        <p className="text-[10px] text-[#c7c7cc] mt-1">{relativeDate(m.created_at)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* OPEN TODOS */}
+          {todos.length > 0 && (
+            <section>
+              <SectionHeader label="Open Todos" count={todos.length} />
+              <div className="flex flex-col gap-1.5">
+                {todos.map(t => (
+                  <div key={t.id} className="flex items-start gap-3 px-4 py-3 bg-white border border-black/[0.06] rounded-xl">
+                    <div className="w-1.5 h-1.5 rounded-full border border-[#EF22DA]/40 mt-1.5 shrink-0" />
+                    <p className="text-[13px] text-[#6c6c70] leading-snug">{t.content}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* BRAND BRIEF */}
+          <section>
+            <div className="flex items-center gap-3 mb-4">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-[#aeaeb2]">Brand Brief</p>
+              <div className="flex-1 h-px bg-black/[0.05]" />
+              <button
+                onClick={() => setEditingBrief(!editingBrief)}
+                className="text-[10px] font-mono text-[#aeaeb2] hover:text-[#6c6c70] transition-colors"
+              >
+                {editingBrief ? 'Cancel' : 'Edit'}
+              </button>
+            </div>
+            {editingBrief ? (
+              <div>
+                <textarea
+                  value={briefDraft}
+                  onChange={e => setBriefDraft(e.target.value)}
+                  placeholder="Write or paste the brand brief here…"
+                  className="w-full h-64 bg-white border border-black/[0.08] rounded-2xl p-5 text-[13px] text-[#3a3a3c] leading-relaxed resize-none focus:outline-none focus:border-black/[0.15] placeholder:text-[#aeaeb2] shadow-[0_1px_4px_rgba(0,0,0,0.04)]"
+                />
+                <button
+                  onClick={saveBrief}
+                  disabled={saving}
+                  className="mt-3 bg-[#EF22DA] text-white text-[13px] font-semibold px-5 py-2.5 rounded-xl hover:opacity-90 disabled:opacity-40"
+                >
+                  {saving ? 'Saving…' : briefSaved ? '✓ Saved' : 'Save Brief'}
+                </button>
+              </div>
+            ) : (
+              <div
+                onClick={() => setEditingBrief(true)}
+                className="cursor-text px-5 py-4 bg-black/[0.02] border border-dashed border-black/[0.06] rounded-2xl hover:border-black/[0.12] transition-all"
+              >
+                {client.brief ? (
+                  <p className="text-[13px] text-[#6c6c70] leading-relaxed whitespace-pre-wrap line-clamp-6">{client.brief}</p>
+                ) : (
+                  <p className="text-[13px] text-[#c7c7cc] italic">No brief yet — click to add one</p>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* VIDEO ANALYSIS */}
+          <section>
+            <SectionHeader label="Video Analysis" />
+            <div className="flex flex-col gap-4">
+              <div className="flex gap-2">
+                <input
+                  value={videoUrl}
+                  onChange={e => setVideoUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && analyzeVideo()}
+                  placeholder="Paste a YouTube URL or video link…"
+                  className="flex-1 bg-white border border-black/[0.07] rounded-xl px-4 py-2.5 text-[13px] text-[#1c1c1e] placeholder:text-[#aeaeb2] focus:outline-none focus:border-black/[0.15] font-mono"
+                />
+                <button
+                  onClick={analyzeVideo}
+                  disabled={analyzing || !videoUrl.trim()}
+                  className="px-4 py-2.5 bg-[#EF22DA] text-white text-[13px] font-semibold rounded-xl hover:opacity-90 disabled:opacity-30 shrink-0"
+                >
+                  {analyzing ? 'Analysing…' : 'Analyse'}
+                </button>
+              </div>
+
+              {videoError && (
+                <p className="text-[12px] text-red-400 px-1">{videoError}</p>
+              )}
+
+              {videoAnalysis && (
+                <div className="bg-white border border-black/[0.07] rounded-2xl p-5 flex flex-col gap-4 shadow-[0_1px_4px_rgba(0,0,0,0.05)]">
+                  <div>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] mb-1">Hook Type</p>
+                    <p className="text-[13px] font-semibold text-[#1c1c1e]">{videoAnalysis.hook_type}</p>
+                    {videoAnalysis.hook_line && (
+                      <p className="text-[12px] text-[#6c6c70] mt-1 italic">"{videoAnalysis.hook_line}"</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] mb-1.5">Why It Pops</p>
+                    <p className="text-[13px] text-[#3a3a3c] leading-snug">{videoAnalysis.why_it_pops}</p>
+                  </div>
+
+                  <div>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] mb-2">What Works</p>
+                    <div className="flex flex-col gap-1.5">
+                      {videoAnalysis.what_works.map((w, i) => (
+                        <div key={i} className="flex items-start gap-2">
+                          <div className="w-1 h-1 rounded-full bg-[#EF22DA]/50 mt-[6px] shrink-0" />
+                          <p className="text-[12px] text-[#6c6c70] leading-snug">{w}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="font-mono text-[9px] uppercase tracking-widest text-[#aeaeb2] mb-2">Angles for {client.name}</p>
+                    <div className="flex flex-col gap-2">
+                      {videoAnalysis.angles_for_client.map((a, i) => (
+                        <div key={i} className="flex items-start gap-2 px-3 py-2.5 bg-[#EF22DA]/[0.04] border border-[#EF22DA]/[0.10] rounded-xl">
+                          <span className="font-mono text-[10px] text-[#EF22DA]/50 mt-[2px] shrink-0">{i + 1}</span>
+                          <p className="text-[12px] text-[#3a3a3c] leading-snug">{a}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <div className="h-8" />
         </div>
       </div>
     </div>

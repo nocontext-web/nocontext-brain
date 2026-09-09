@@ -14,5 +14,6 @@ export function getSupabase(): SupabaseClient {
 
 // Named export for convenience — only call from API routes (server-side)
 export const supabase = {
+  get rpc() { return getSupabase().rpc.bind(getSupabase()) },
   get from() { return getSupabase().from.bind(getSupabase()) },
 }

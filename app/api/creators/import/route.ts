@@ -1,3 +1,4 @@
+import { socialUrl } from '@/lib/social-url'
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
@@ -6,10 +7,10 @@ import { CREATOR_TYPES, COUNTRIES, normalizeToList, normalizeCategories } from '
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { exec as execCb } from 'child_process'
+import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 
-const exec = promisify(execCb)
+const execFile = promisify(execFileCb)
 const fileManager = new GoogleAIFileManager(process.env.GOOGLE_AI_API_KEY!)
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY!)
 
@@ -34,9 +35,10 @@ function formatFollowers(n: number): string {
 }
 
 function inferTier(followers: number): string {
-  if (followers >= 500_000) return 'celebrity'
-  if (followers >= 200_000) return 'macro'
-  if (followers >= 50_000) return 'mid'
+  if (!followers) return 'unknown'
+  if (followers >= 1_000_000) return 'celebrity'
+  if (followers >= 100_000) return 'beachhead'
+  if (followers >= 20_000) return 'tier2'
   return 'micro'
 }
 
@@ -100,12 +102,7 @@ async function downloadVideo(videoUrl: string): Promise<string> {
 
 async function downloadWithYtDlp(url: string): Promise<string> {
   const tmpPath = path.join(os.tmpdir(), `nc_ytdlp_${Date.now()}.mp4`)
-  await exec(
-    `python3 -m yt_dlp -o "${tmpPath}" --no-playlist -q --no-warnings ` +
-    `--user-agent "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" ` +
-    `"${url}"`,
-    { timeout: 90000 }
-  )
+  await execFile('python3', ['-m', 'yt_dlp', '-o', tmpPath, '--no-playlist', '-q', '--no-warnings', '--', url], { timeout: 90000 })
   if (!fs.existsSync(tmpPath)) throw new Error('yt-dlp: file not found')
   return tmpPath
 }
@@ -140,7 +137,7 @@ async function analyseCreatorStyle(
   // fits *that*, not just describe them generically — and that use-case has
   // to come back out as a clean tag so it's actually findable later.
   const useCaseInstruction = requestedUseCase
-    ? `Josh said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Make sure your CATEGORIES pick includes whichever value from the fixed list best matches what Josh said, even if his phrasing was more specific (e.g. "how-to content" → closest is probably Lifestyle, Home & Renovation, Fitness etc. depending on the topic — use judgement). If what Josh said implies a location (e.g. "NYC creator", "good UK creator"), treat that as your default CITY/COUNTRY unless the video clearly shows otherwise.`
+    ? `The submitter said this about them: "${requestedUseCase}". Your NOTES must specifically explain why the video supports (or doesn't support) that claim, citing what you actually see. Make sure your CATEGORIES pick includes whichever value from the fixed list best matches what the submitter said, even if his phrasing was more specific (e.g. "how-to content" → closest is probably Lifestyle, Home & Renovation, Fitness etc. depending on the topic — use judgement). If what the submitter said implies a location (e.g. "NYC creator", "good UK creator"), treat that as your default CITY/COUNTRY unless the video clearly shows otherwise.`
     : ''
   const result = await model.generateContent([
     { fileData: { mimeType: upload.file.mimeType, fileUri: upload.file.uri } },
@@ -154,7 +151,7 @@ NOTES: 3-4 sentences covering their on-camera presence and energy, their editing
 
 CATEGORIES: Pick 1-4 values from exactly this list, comma separated, that best describe what this creator is good for: ${CREATOR_TYPES.join(', ')}. Do not invent new categories — pick the closest fits from that list only.
 
-CITY: The specific city/region they appear to be based in, judged from accent, language, signage, landmarks, captions, or bio context visible in the video. If genuinely unclear, write unknown.
+CITY: The city or region explicitly stated in the profile or submitted note. Do not infer residence from accent, appearance or scenery. If not stated, write unknown.
 
 COUNTRY: Pick the closest match from exactly this list: ${COUNTRIES.join(', ')}. If genuinely unclear, write unknown.`,
     },
@@ -237,28 +234,48 @@ async function findExistingCreator(igUrl?: string, ttUrl?: string) {
   const ttHandle = ttUrl ? `@${extractUsername(ttUrl)}` : null
   if (!igHandle && !ttHandle) return null
 
-  let query = supabase.from('creators').select('id, name, ig_handle, tt_handle, status').limit(1)
+  let query = supabase.from('creators').select('id, name, ig_handle, tt_handle, status, notes').limit(2)
   if (igHandle && ttHandle) query = query.or(`ig_handle.eq.${igHandle},tt_handle.eq.${ttHandle}`)
   else if (igHandle) query = query.eq('ig_handle', igHandle)
   else query = query.eq('tt_handle', ttHandle!)
 
-  const { data } = await query
+  const { data, error } = await query
+  if (error) throw new Error(error.message)
+  if (data && data.length > 1) throw new Error('Multiple creator records match; review them before filing')
   return data?.[0] ?? null
 }
 
 export async function POST(req: NextRequest) {
-  const { igUrl, ttUrl, videoUrl, note } = await req.json() as {
-    igUrl?: string; ttUrl?: string; videoUrl?: string; note?: string
-  }
+  let igUrl: string | undefined, ttUrl: string | undefined, videoUrl: string | undefined, note: string | undefined
+  try {
+    const body = await req.json()
+    igUrl = body.igUrl ? socialUrl(body.igUrl, 'instagram') : undefined
+    ttUrl = body.ttUrl ? socialUrl(body.ttUrl, 'tiktok') : undefined
+    videoUrl = body.videoUrl ? socialUrl(body.videoUrl) : undefined
+    if (body.note != null && typeof body.note !== 'string') throw new Error('Note must be text')
+    note = body.note?.trim()
+    if (!igUrl && !ttUrl) throw new Error('Provide at least one profile URL')
+    for (const profile of [igUrl, ttUrl].filter(Boolean)) {
+      const path = new URL(profile!).pathname
+      if (!/^\/@?[a-zA-Z0-9._]+\/?$/.test(path) || /^\/(reel|p|t|shorts)\/?$/.test(path)) throw new Error('Use a creator profile link; send individual videos as references')
+    }
+  } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid request' }, { status: 400 }) }
 
-  if (!igUrl && !ttUrl) {
-    return NextResponse.json({ error: 'Provide at least one profile URL' }, { status: 400 })
-  }
-
-  const existing = await findExistingCreator(igUrl, ttUrl)
-  if (existing) {
-    return NextResponse.json({ duplicate: true, creator: existing })
-  }
+  try {
+    const existing = await findExistingCreator(igUrl, ttUrl)
+    if (existing) {
+      const line = note ? `Submitted note: ${note}` : ''
+      if (line && !(existing.notes || '').split('\n').includes(line)) {
+        let update = supabase.from('creators').update({ notes: [existing.notes, line].filter(Boolean).join('\n') }).eq('id', existing.id)
+        update = existing.notes == null ? update.is('notes', null) : update.eq('notes', existing.notes)
+        const { data, error } = await update.select().maybeSingle()
+        if (error) throw new Error(error.message)
+        if (!data) return NextResponse.json({ error: 'Creator changed while saving the note; please try again' }, { status: 409 })
+        return NextResponse.json({ duplicate: true, creator: data, noteSaved: true })
+      }
+      return NextResponse.json({ duplicate: true, creator: existing })
+    }
+  } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Creator lookup failed' }, { status: 500 }) }
 
   const igData: Record<string, any> = {}
   const ttData: Record<string, any> = {}
@@ -332,11 +349,14 @@ export async function POST(req: NextRequest) {
     ig_followers: igData.ig_followers || '',
     tt_handle: ttData.tt_handle || '',
     tt_followers: ttData.tt_followers || '',
+    ig_followers_count: igData.ig_followers_raw ?? null,
+    tt_followers_count: ttData.tt_followers_raw ?? null,
+    followers_checked_at: new Date().toISOString(),
     tier: inferTier(maxFollowers),
     city,
     country,
     location: [city, country].filter(Boolean).join(', '),
-    notes: styleNotes,
+    notes: [note ? `Submitted note: ${note}` : '', styleNotes ? `Profile / analysis: ${styleNotes}` : ''].filter(Boolean).join('\n'),
     // 'scouted' — this is Josh building out a personal rolodex of creators he
     // rates, not Ria's active outreach/deal pipeline. 'prospect' implies
     // we've already started pursuing them for a specific client; someone can
@@ -345,7 +365,7 @@ export async function POST(req: NextRequest) {
     categories,
   }
 
-  const { data, error } = await supabase.from('creators').insert(creator).select().single()
+  const { data, error } = await supabase.rpc('save_rolodex_profile', { p_creator: creator, p_note: note || '' }).single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
   return NextResponse.json({ creator: data, warnings: errors.length ? errors : undefined })

@@ -1,3 +1,4 @@
+import { appendStandingMemory } from '@/lib/standing-memory'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -23,14 +24,6 @@ export async function POST(req: NextRequest) {
     .join('\n\n')
 
   const saves = AGENT_KEYS.map(async (agentKey: AgentKey) => {
-    const memoryRes = await supabase
-      .from('agent_memory')
-      .select('content')
-      .eq('agent', agentKey)
-      .single()
-
-    const existingMemory = memoryRes.data?.content ?? ''
-
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 500,
@@ -44,13 +37,7 @@ export async function POST(req: NextRequest) {
     const learnings = response.content[0].type === 'text' ? response.content[0].text.trim() : ''
     if (!learnings) return { agent: agentKey, learnings: '' }
 
-    const newMemory = existingMemory
-      ? `${existingMemory}\n\n## Training Session ${new Date().toLocaleDateString('en-AU')}${topic ? ` — ${topic}` : ''}:\n${learnings}`
-      : `## Training Session ${new Date().toLocaleDateString('en-AU')}${topic ? ` — ${topic}` : ''}:\n${learnings}`
-
-    await supabase
-      .from('agent_memory')
-      .upsert({ agent: agentKey, content: newMemory }, { onConflict: 'agent' })
+    await appendStandingMemory(agentKey, `Training Session ${new Date().toLocaleDateString('en-AU')}${topic ? ` — ${topic}` : ''}:\n${learnings}`)
 
     // Also save key learnings to Josh's Obsidian folder
     await saveToObsidian(agentKey, learnings, topic)

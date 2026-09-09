@@ -7,10 +7,8 @@ import { usePathname } from 'next/navigation'
 type NavItem = { href: string; label: string; icon: string }
 
 const items: NavItem[] = [
-  { href: '/',         label: 'Today',    icon: '◈' },
+  { href: '/',         label: 'Overview',    icon: '◈' },
   { href: '/clients',  label: 'Clients',  icon: '◎' },
-  { href: '/creators', label: 'Creators', icon: '✦' },
-  { href: '/research', label: 'Research', icon: '⌕' },
 ]
 
 const bottomItems: NavItem[] = [

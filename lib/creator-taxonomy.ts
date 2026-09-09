@@ -41,10 +41,18 @@ export function normalizeToList(value: string | null | undefined, list: readonly
   if (!value) return null
   const v = value.trim().toLowerCase()
   if (!v || v === 'unknown') return null
+  if (list === COUNTRIES) {
+    const aliases: Record<string, string> = {
+      au: 'Australia', aus: 'Australia', australia: 'Australia',
+      us: 'United States', usa: 'United States', 'u.s.': 'United States', 'u.s.a.': 'United States', 'united states': 'United States', 'the united states': 'United States', 'united states of america': 'United States',
+      uk: 'United Kingdom', gb: 'United Kingdom', 'united kingdom': 'United Kingdom',
+      ca: 'Canada', canada: 'Canada', nz: 'New Zealand', 'new zealand': 'New Zealand', other: 'Other',
+    }
+    return aliases[v] ?? null
+  }
   const exact = list.find(l => l.toLowerCase() === v)
   if (exact) return exact
-  // Loose contains-match both ways so "US" / "USA" / "the United States" all
-  // land on "United States" instead of getting dropped.
+  // Category phrases may contain a canonical category; countries use aliases above.
   const partial = list.find(l => l.toLowerCase().includes(v) || v.includes(l.toLowerCase()))
   return partial ?? null
 }

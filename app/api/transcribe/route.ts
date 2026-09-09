@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     }
     if (uploaded.state === FileState.FAILED) throw new Error('Gemini failed to process file')
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' })
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
 
     const result = await model.generateContent([
       { fileData: { mimeType: uploaded.mimeType, fileUri: uploaded.uri } },

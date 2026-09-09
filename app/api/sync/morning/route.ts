@@ -1,3 +1,7 @@
+import { sydneyDayBoundsUTC } from '@/lib/sydney-time'
+import { eventPhase } from '@/lib/email-thread'
+import { POST as syncGmail } from '../gmail/route'
+import { POST as syncCalendar } from '../calendar/route'
 import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -7,9 +11,9 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 async function postToSlack(text: string): Promise<void> {
   const token = process.env.SLACK_BOT_TOKEN
   const channel = process.env.YAY_CHANNEL_ID
-  if (!token || !channel) return
+  if (!token || !channel) throw new Error('Morning Slack destination is not configured')
 
-  await fetch('https://slack.com/api/chat.postMessage', {
+  const response = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -17,33 +21,8 @@ async function postToSlack(text: string): Promise<void> {
     },
     body: JSON.stringify({ channel, text, unfurl_links: false }),
   })
-}
-
-function todayKey() {
-  return new Date().toLocaleDateString('en-AU', { timeZone: 'Australia/Sydney' })
-}
-
-// The server's local timezone (UTC on most hosts) is not Sydney's, so naive
-// `setHours(0,0,0,0)` day-boundary math silently shifts by 10-11 hours and
-// can pull yesterday's or tomorrow's events into "today". Compute the actual
-// Sydney day boundaries as real UTC instants instead.
-function sydneyDayBoundsUTC(now: Date) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Australia/Sydney',
-    hourCycle: 'h23',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc }, {} as Record<string, string>)
-
-  const sydneyWallAsUTC = Date.UTC(
-    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-    Number(parts.hour), Number(parts.minute), Number(parts.second)
-  )
-  const offsetMs = sydneyWallAsUTC - now.getTime()
-
-  const startOfDay = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 0, 0, 0, 0) - offsetMs)
-  const endOfDay = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 23, 59, 59, 999) - offsetMs)
-  return { startOfDay, endOfDay }
+  const result=await response.json()
+  if(!response.ok||!result.ok)throw new Error(result.error||'Morning message was not confirmed')
 }
 
 export async function POST() {
@@ -61,7 +40,7 @@ export async function POST() {
   const { startOfDay, endOfDay } = sydneyDayBoundsUTC(now)
 
   // Only post once per day — check if already done
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('agent_thoughts')
     .select('id')
     .eq('agent', 'caspar')
@@ -69,11 +48,15 @@ export async function POST() {
     .gte('created_at', startOfDay.toISOString())
     .limit(1)
 
+  if(existingError)return NextResponse.json({ok:false,error:'Could not check prior briefing delivery'},{status:503})
   if (existing && existing.length > 0) {
     return NextResponse.json({ ok: true, skipped: true, reason: 'already posted today' })
   }
 
-  const [eventsRes, emailsRes, todosRes, memoryRes] = await Promise.all([
+  // Refresh first. A failed source is excluded, not silently treated as current.
+  const refresh = await Promise.allSettled([syncCalendar(),syncGmail()])
+  const fresh = refresh.map(r=>r.status==='fulfilled' && r.value.ok)
+  const [eventsRes, emailsRes, todosRes, memoryRes, pocketRes, syncRes] = await Promise.all([
     supabase
       .from('calendar_events')
       .select('title, start_time, end_time, location, attendees')
@@ -82,9 +65,11 @@ export async function POST() {
       .order('start_time'),
     supabase
       .from('email_inbox')
-      .select('subject, from_address, priority, reason, suggested_reply')
+      .select('subject, from_address, priority, reason, suggested_reply, reply_state, checked_at')
       .eq('needs_attention', true)
       .eq('status', 'unread')
+      .eq('reply_state', 'awaiting_reply')
+      .gte('checked_at',new Date(Date.now()-15*60000).toISOString())
       .order('priority', { ascending: false })
       .limit(5),
     supabase
@@ -98,10 +83,16 @@ export async function POST() {
       .select('content')
       .eq('agent', 'caspar')
       .single(),
+    supabase.from('memories').select('content,source_recorded_at,created_at').eq('source','pocket').gte('created_at',new Date(Date.now()-24*3600000).toISOString()).order('created_at',{ascending:false}).limit(40),
+    supabase.from('source_sync_status').select('*').in('source',['pocket','gmail','calendar']),
   ])
 
-  const events = eventsRes.data ?? []
-  const emails = emailsRes.data ?? []
+  if(todosRes.error || memoryRes.error || syncRes.error) return NextResponse.json({ok:false,error:'Briefing context unavailable'},{status:503})
+  const events = fresh[0]&&!eventsRes.error ? eventsRes.data ?? [] : []
+  const emails = fresh[1]&&!emailsRes.error ? emailsRes.data ?? [] : []
+  const pocketStatus=syncRes.data?.find(s=>s.source==='pocket')
+  const pocketFresh=pocketStatus?.succeeded && Date.now()-Date.parse(pocketStatus.checked_at)<15*60000
+  const limitations=[!fresh[0]||eventsRes.error?'Calendar could not be refreshed.':null,!fresh[1]||emailsRes.error?'Email reply status could not be refreshed.':null,!pocketFresh||pocketRes.error?'Pocket could not be refreshed.':pocketStatus?.details?.more?'Some Pocket recordings are still being processed.':null].filter(Boolean)
   const todos = todosRes.data ?? []
   const memory = memoryRes.data?.content ?? ''
 
@@ -113,35 +104,54 @@ export async function POST() {
         const t = new Date(e.start_time).toLocaleTimeString('en-AU', { hour: '2-digit', minute: '2-digit', timeZone: 'Australia/Sydney' })
         const attendees = e.attendees?.length > 1 ? ` (${e.attendees.length} people)` : ''
         const loc = e.location ? ` @ ${e.location}` : ''
-        return `${t}: ${e.title}${loc}${attendees}`
+        return `[${eventPhase(e.start_time,e.end_time,now)}] ${t}: ${e.title}${loc}${attendees}`
       }).join('\n')
-    : 'Nothing on'
+    : fresh[0]?'No events in the synced calendar window':'Calendar unavailable'
 
   const emailBlock = emails.length
     ? emails.map(e => `- ${e.priority === 'high' ? '🔴' : '⚪'} ${e.subject} — ${e.from_address.replace(/<.*?>/, '').trim()}`).join('\n')
-    : 'Inbox clear'
+    : fresh[1]?'No reply-needed threads found in the checked set':'Email status unavailable'
 
   const todoBlock = todos.length
     ? todos.map(t => `- ${t.content}`).join('\n')
     : 'Nothing open'
 
-  const prompt = `You are Caspar. Josh's co-founder at NO CONTEXT. It's ${dayOfWeek} ${dateStr} in Sydney.
+  const prompt = `You are Caspar. Josh's co-founder at NO CONTEXT. It's ${dayOfWeek} ${dateStr}, ${now.toLocaleTimeString('en-AU',{timeZone:'Australia/Sydney',hour:'2-digit',minute:'2-digit'})} in Sydney.
 
-Write a short morning message to Josh in #yay. Sound like yourself — sharp, direct, like a mate who knows what's on. Not a report. Not a list with headers. A few short paragraphs, punchy sentences. Max 150 words.
+Write a short morning message to Josh in #yay. Sound like yourself — sharp, direct, like a mate who knows what's on. Not a report. Not a list with headers. A few short punchy sentences. Max 120 words.
 
-Cover: what's on today, anything urgent in the inbox, what to focus on. If it's quiet, say so. End with one line — your honest read on the day or what matters most.
-
-Never use em dashes. Never use bold headers.${memory ? `\n\nYour memory on Josh and the business:\n${memory.slice(0, 600)}` : ''}
+RULES:
+- The calendar explicitly labels already-ended, in-progress and upcoming events. Never describe an ended event as ahead. Do not invent focus blocks or free time.
+- Only the listed email threads have been verified as potentially waiting for Josh. Do not say the whole inbox is clear or invent another unanswered thread from memory.
+- Pocket statements can explain a change or completion. If a task conflicts with a recent capture, surface the discrepancy instead of repeating the task as certainly undone.
+- Include any SOURCE LIMITATIONS briefly. A failed sync is not an empty source.
+- Only suggest Josh action something if it's on his OPEN TODOS list. Do not push him to do things based on emails alone — if it's not on the list, it might already be handled.
+- Emails are context only. Flag them if they need a reply, but don't assume the underlying work isn't done.
+- If todos are empty or quiet, say so. Don't manufacture urgency.
+- Never use em dashes. Never use bold headers.
+${memory ? `\nYour memory:\n${memory.slice(0, 500)}` : ''}
 
 TODAY'S CALENDAR:
 ${calBlock}
 
-EMAILS NEEDING ATTENTION:
+EMAILS NEEDING ATTENTION (context only — don't push action unless it maps to a todo):
 ${emailBlock}
 
-OPEN TODOS:
-${todoBlock}`
+OPEN TODOS (may need reconciliation with recent Pocket evidence):
+${todoBlock}
 
+RECENT POCKET CAPTURES (recorded time matters; do not treat old recordings as new events):
+${pocketFresh&&!pocketRes.error?(pocketRes.data??[]).map(m=>`[recorded ${m.source_recorded_at||'unknown'}] ${m.content}`).join('\n'):'Unavailable'}
+
+SOURCE LIMITATIONS:
+${limitations.join(' ')||'All listed sources refreshed.'}`
+
+  const dayKey=now.toLocaleDateString('en-CA',{timeZone:'Australia/Sydney'})
+  const {error:claimError}=await supabase.from('briefing_deliveries').insert({day_key:dayKey,status:'preparing'})
+  if(claimError?.code==='23505')return NextResponse.json({ok:true,skipped:true,reason:'briefing already claimed'})
+  if(claimError)return NextResponse.json({ok:false,error:'Could not reserve briefing delivery'},{status:503})
+  let delivering=false
+  try {
   const res = await anthropic.messages.create({
     model: 'claude-opus-4-6',
     max_tokens: 300,
@@ -149,10 +159,15 @@ ${todoBlock}`
   })
 
   const message = res.content[0].type === 'text' ? res.content[0].text.trim() : ''
-  if (!message) return NextResponse.json({ ok: false, error: 'No message generated' })
+  if (!message) throw new Error('No message generated')
 
   const slackText = `🩷 *${dayOfWeek} ${dateStr}*\n\n${message}`
+  const {error:saveError}=await supabase.from('briefing_deliveries').update({status:'sending',message:slackText}).eq('day_key',dayKey)
+  if(saveError)throw saveError
+  delivering=true
   await postToSlack(slackText)
+  const {error:receiptError}=await supabase.from('briefing_deliveries').update({status:'sent'}).eq('day_key',dayKey)
+  if(receiptError)throw receiptError
 
   // Mark as done so we don't re-post
   await supabase.from('agent_thoughts').insert({
@@ -163,4 +178,9 @@ ${todoBlock}`
   })
 
   return NextResponse.json({ ok: true, posted: true, message })
+  } catch(error:any) {
+    if(delivering)await supabase.from('briefing_deliveries').update({status:'uncertain',error:error.message}).eq('day_key',dayKey)
+    else await supabase.from('briefing_deliveries').delete().eq('day_key',dayKey).eq('status','preparing')
+    return NextResponse.json({ok:false,error:'Morning briefing could not be confirmed'},{status:503})
+  }
 }

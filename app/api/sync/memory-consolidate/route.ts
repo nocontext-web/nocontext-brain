@@ -86,7 +86,7 @@ Output format — exactly this, no other text before or after:
 
   // Archive the pre-consolidation raw log to the Obsidian vault before overwriting —
   // nothing is destroyed, it's just no longer what gets read into prompts.
-  await supabase.from('obsidian_notes').upsert({
+  const { error: archiveError } = await supabase.from('obsidian_notes').upsert({
     path: `System/Memory Archive ${date}.md`,
     folder: 'System',
     title: `Memory Archive ${date}`,
@@ -94,7 +94,10 @@ Output format — exactly this, no other text before or after:
     updated_at: new Date().toISOString(),
   }, { onConflict: 'path' })
 
-  await supabase.from('agent_memory').update({ content: consolidated }).eq('agent', 'caspar')
+  if (archiveError) return NextResponse.json({ ok: false, error: 'Memory archive failed' }, { status: 500 })
+  const { data: updated, error: updateError } = await supabase.from('agent_memory').update({ content: consolidated }).eq('agent', 'caspar').eq('content', raw).select('agent')
+  if (updateError) return NextResponse.json({ ok: false, error: updateError.message }, { status: 500 })
+  if (!updated?.length) return NextResponse.json({ ok: false, error: 'Memory changed during consolidation; retry with current content' }, { status: 409 })
 
   // Replace last run's open questions rather than piling up forever — if a
   // question got answered, the fact it was answered shows up in the next

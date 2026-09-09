@@ -1,3 +1,4 @@
+import { appendStandingMemory } from '@/lib/standing-memory'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -61,8 +62,7 @@ Title must be the entity name only — client name, person, or topic. Short and 
   if (!decision.save) return
 
   if (decision.memory) {
-    const updated = existingMemory ? `${existingMemory}\n- ${decision.memory}` : `- ${decision.memory}`
-    await supabase.from('agent_memory').upsert({ agent: agentKey, content: updated }, { onConflict: 'agent' })
+    await appendStandingMemory(agentKey, decision.memory)
   }
 
   if (decision.folder && decision.title && decision.insight) {

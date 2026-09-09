@@ -7,10 +7,10 @@
 -- `google_tokens` holds real Gmail/Calendar OAuth tokens in plaintext — this
 -- is the most urgent one.
 --
--- This is safe to run: every real code path (brain, Hermes, Caspar, the MCP
--- bridge) uses the service_role key, which always bypasses RLS by design.
--- Enabling RLS with no policies blocks the public anon key completely and
--- changes nothing about how your own systems work.
+-- Apply only after deploying authenticated server routes and removing direct
+-- anonymous browser reads. Verify the live policies before and after applying.
+-- This script does not authenticate the web application's API routes; proxy.ts
+-- provides the separate application access boundary.
 
 ALTER TABLE IF EXISTS google_tokens        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS clients              ENABLE ROW LEVEL SECURITY;
@@ -34,3 +34,7 @@ ALTER TABLE IF EXISTS agent_memory         ENABLE ROW LEVEL SECURITY;
 -- the same full access to anon as having no policy at all. Drop it; no
 -- replacement policy is needed since service_role bypasses RLS anyway.
 DROP POLICY IF EXISTS "service_role_all" ON memories;
+
+ALTER TABLE IF EXISTS research_boards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS reference_videos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS open_questions ENABLE ROW LEVEL SECURITY;

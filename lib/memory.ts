@@ -31,61 +31,6 @@ const TYPE_ORDER: MemoryType[] = [
   'process_rule', 'creative_insight', 'taste_note', 'decision', 'client', 'contact', 'opinion', 'general'
 ]
 
-/**
- * Fetch live Asana tasks and format as a team board summary for Caspar.
- */
-async function getAsanaContext(): Promise<string> {
-  const token = process.env.ASANA_TOKEN
-  if (!token) return ''
-  try {
-    const res = await fetch('https://app.asana.com/api/1.0/workspaces', {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-      next: { revalidate: 0 },
-    })
-    if (!res.ok) return ''
-    const { data: workspaces } = await res.json()
-    if (!workspaces?.length) return ''
-    const pinned = process.env.ASANA_WORKSPACE_GID
-    const workspace = pinned
-      ? workspaces.find((w: { gid: string }) => w.gid === pinned)
-      : workspaces.find((w: { name: string }) => w.name.toLowerCase().includes('context')) ?? workspaces[0]
-    const wgid = workspace.gid
-
-    const projectsRes = await fetch(
-      `https://app.asana.com/api/1.0/workspaces/${wgid}/projects?archived=false&limit=50`,
-      { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, next: { revalidate: 0 } }
-    )
-    const { data: projects } = await projectsRes.json()
-    if (!projects?.length) return ''
-
-    const taskGroups = await Promise.all(
-      projects.slice(0, 20).map(async (p: { gid: string; name: string }) => {
-        const tr = await fetch(
-          `https://app.asana.com/api/1.0/tasks?project=${p.gid}&completed_since=now&opt_fields=name,assignee.name,due_on&limit=30`,
-          { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, next: { revalidate: 0 } }
-        )
-        const { data: tasks } = await tr.json()
-        return { project: p.name, tasks: (tasks ?? []).filter((t: { name: string }) => t.name) }
-      })
-    )
-
-    const lines: string[] = []
-    for (const { project, tasks } of taskGroups) {
-      if (!tasks.length) continue
-      for (const t of tasks) {
-        const who = t.assignee?.name ?? 'Unassigned'
-        const due = t.due_on ? ` (due ${t.due_on})` : ''
-        lines.push(`- [${project}] ${t.name} → ${who}${due}`)
-      }
-    }
-
-    if (!lines.length) return ''
-    return `\n\n## TEAM BOARD (live from Asana)\n${lines.join('\n')}`
-  } catch {
-    return ''
-  }
-}
-
 const FINANCIAL_PATTERN = /(\$[\d,]+|\bmonthly value\b|\bretainer\b|\binvoice\b|\bpricing\b|\bfee\b|\bfees\b|\brate\b|\brates\b|\bquote\b|\bbudget\b|\bpaid\b|\bowing\b|\boverdue\b)/i
 
 function isFinancial(text: string): boolean {
@@ -97,12 +42,11 @@ function isFinancial(text: string): boolean {
  * Pass isJosh=false to strip all financial info (for team members).
  */
 export async function getCasparContext(relatedClient?: string, isJosh = true): Promise<string> {
-  const [promptRes, memoriesRes, legacyRes, asanaContext] = await Promise.all([
+  const [promptRes, memoriesRes, legacyRes] = await Promise.all([
     supabase.from('agent_prompts').select('prompt').eq('agent', 'caspar').single(),
     supabase.from('memories').select('*').eq('status', 'active').order('created_at', { ascending: false }),
     // Keep loading legacy blob during migration
     supabase.from('agent_memory').select('content').eq('agent', 'caspar').single(),
-    getAsanaContext(),
   ])
 
   const systemPrompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS['caspar'] ?? ''
@@ -159,7 +103,7 @@ export async function getCasparContext(relatedClient?: string, isJosh = true): P
     ? `\n\nHARD RULE: You are speaking with a team member, not Josh. Never mention retainer amounts, monthly fees, pricing, invoice figures, or any financial information about clients — not even ranges or approximations. If asked, say that's between Josh and the client.`
     : ''
 
-  return `${systemPrompt}${financialGuard}${memoryBlock}${asanaContext}`
+  return `${systemPrompt}${financialGuard}${memoryBlock}`
 }
 
 /**

@@ -1,6 +1,3 @@
-export async function register() {
-  if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { startAutoSync } = await import('./lib/auto-sync')
-    startAutoSync()
-  }
-}
+// Background work is owned by the Slack worker. Starting a web preview must
+// not synchronize or mutate production data.
+export async function register() {}

@@ -1,15 +1,16 @@
+import { socialUrl } from '@/lib/social-url'
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { exec as execCb } from 'child_process'
+import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 import { supabase } from '@/lib/supabase'
 import { getCasparContext } from '@/lib/memory'
 
-const exec = promisify(execCb)
+const execFile = promisify(execFileCb)
 const fileManager = new GoogleAIFileManager(process.env.GOOGLE_AI_API_KEY!)
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_AI_API_KEY!)
 
@@ -43,10 +44,7 @@ async function downloadWithYtDlp(url: string): Promise<string> {
   // impersonation (curl_cffi) to bypass bot detection, and overriding the
   // user-agent breaks that fingerprint, causing "Video not available, status
   // code 0" even on genuinely available videos. Let yt-dlp manage its own UA.
-  await exec(
-    `"${ytDlpPath}" -o "${tmpPath}" --no-playlist -q --no-warnings "${url}"`,
-    { timeout: 120000 }
-  )
+  await execFile(ytDlpPath, ['-o', tmpPath, '--no-playlist', '-q', '--no-warnings', '--', url], { timeout: 120000 })
   if (!fs.existsSync(tmpPath)) throw new Error('yt-dlp: file not found after download')
   return tmpPath
 }
@@ -60,8 +58,9 @@ export async function POST(req: NextRequest) {
   let body: { url?: string; category?: string; creator_name?: string; notes?: string }
   try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid request' }, { status: 400 }) }
 
-  const { url, category, creator_name, notes } = body
-  if (!url) return NextResponse.json({ error: 'URL required' }, { status: 400 })
+  const { category, creator_name, notes } = body
+  let url: string
+  try { url = socialUrl(body.url) } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid URL' }, { status: 400 }) }
 
   let tmpPath: string | null = null
 

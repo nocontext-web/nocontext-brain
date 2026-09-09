@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveClickUpList, createClickUpTask } from '@/lib/clickup'
-import type { ProposedTask } from '../../granola/sync/route'
+import type { ProposedTask } from '@/lib/task-types'
 
 export async function POST(req: NextRequest) {
   const { tasks } = await req.json() as { tasks: ProposedTask[] }

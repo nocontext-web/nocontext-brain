@@ -80,7 +80,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
     }
 
     // Ask Gemini to analyse the video content
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' })
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
     const geminiResult = await model.generateContent([
       {
         fileData: {
