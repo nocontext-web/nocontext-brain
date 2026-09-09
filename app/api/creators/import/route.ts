@@ -147,7 +147,7 @@ ${useCaseInstruction}
 
 Respond in exactly this format, no markdown, no extra text before or after:
 
-NOTES: 3-4 sentences covering their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
+NOTES: First describe this specific video’s subject, hook and repeatable format. Separate observed details from the submitter’s suggested client fit; do not treat a suggestion as a confirmed sponsorship. Then give 3-4 sentences covering their on-camera presence and energy, their editing style and pacing, what kind of content they make and what makes it work, and what type of brand they'd be best suited to. Be specific and direct — this will be used to brief clients on why this creator is a good fit.
 
 CATEGORIES: Pick 1-4 values from exactly this list, comma separated, that best describe what this creator is good for: ${CREATOR_TYPES.join(', ')}. Do not invent new categories — pick the closest fits from that list only.
 
@@ -254,26 +254,57 @@ export async function POST(req: NextRequest) {
     videoUrl = body.videoUrl ? socialUrl(body.videoUrl) : undefined
     if (body.note != null && typeof body.note !== 'string') throw new Error('Note must be text')
     note = body.note?.trim()
-    if (!igUrl && !ttUrl) throw new Error('Provide at least one profile URL')
+    if (!igUrl && !ttUrl && !videoUrl) throw new Error('Provide a profile or video URL')
     for (const profile of [igUrl, ttUrl].filter(Boolean)) {
       const path = new URL(profile!).pathname
       if (!/^\/@?[a-zA-Z0-9._]+\/?$/.test(path) || /^\/(reel|p|t|shorts)\/?$/.test(path)) throw new Error('Use a creator profile link; send individual videos as references')
     }
   } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Invalid request' }, { status: 400 }) }
 
+  // Resolve the author from the supplied post, never from its caption or guesses.
+  if (videoUrl && !igUrl && !ttUrl) {
+    try {
+      const u = new URL(videoUrl)
+      if (['instagram.com', 'www.instagram.com'].includes(u.hostname) && /^\/(reel|p|tv)\/[A-Za-z0-9_-]+\/?$/.test(u.pathname)) {
+        videoUrl = `https://www.instagram.com${u.pathname}`
+        const posts = await fetchFromApify('apify~instagram-scraper', { directUrls: [videoUrl], resultsType: 'posts', resultsLimit: 1 })
+        const handle = posts[0]?.ownerUsername
+        if (typeof handle !== 'string' || !/^[A-Za-z0-9._]+$/.test(handle)) throw new Error('The video is saved, but its creator could not be identified. Add their profile link to retry.')
+        igUrl = `https://www.instagram.com/${handle.toLowerCase()}/`
+      } else if (['tiktok.com', 'www.tiktok.com'].includes(u.hostname)) {
+        const match = u.pathname.match(/^\/@([A-Za-z0-9._]+)\/video\/\d+\/?$/)
+        if (!match) throw new Error('Use the full TikTok video link')
+        videoUrl = `https://www.tiktok.com${u.pathname}`
+        ttUrl = `https://www.tiktok.com/@${match[1].toLowerCase()}/`
+      } else throw new Error('Use a direct Instagram reel or TikTok video link')
+    } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Video author lookup failed' }, { status: 422 }) }
+  }
+  if (videoUrl) note = [note, `Video reference: ${videoUrl}`].filter(Boolean).join('\n')
+
   try {
     const existing = await findExistingCreator(igUrl, ttUrl)
     if (existing) {
-      const line = note ? `Submitted note: ${note}` : ''
-      if (line && !(existing.notes || '').split('\n').includes(line)) {
+      let line = note ? `Submitted note: ${note}` : ''
+      const warnings: string[] = []
+      if (videoUrl && !(existing.notes || '').includes(`Video reference: ${videoUrl}`)) {
+        let tmpPath: string | null = null
+        try {
+          const media = await getVideoUrl(videoUrl)
+          tmpPath = media ? await downloadVideo(media) : await downloadWithYtDlp(videoUrl)
+          const analysis = await analyseCreatorStyle(tmpPath, existing.name || '', note)
+          line += `\nVideo analysis (${videoUrl}): ${analysis.notes}`
+        } catch { warnings.push('Video reference saved, but video analysis could not be completed') }
+        finally { if (tmpPath) fs.unlink(tmpPath, () => {}) }
+      }
+      if (line && !(existing.notes || '').includes(line)) {
         let update = supabase.from('creators').update({ notes: [existing.notes, line].filter(Boolean).join('\n') }).eq('id', existing.id)
         update = existing.notes == null ? update.is('notes', null) : update.eq('notes', existing.notes)
         const { data, error } = await update.select().maybeSingle()
         if (error) throw new Error(error.message)
         if (!data) return NextResponse.json({ error: 'Creator changed while saving the note; please try again' }, { status: 409 })
-        return NextResponse.json({ duplicate: true, creator: data, noteSaved: true })
+        return NextResponse.json({ duplicate: true, creator: data, noteSaved: true, warnings })
       }
-      return NextResponse.json({ duplicate: true, creator: existing })
+      return NextResponse.json({ duplicate: true, creator: existing, warnings })
     }
   } catch (error) { return NextResponse.json({ error: error instanceof Error ? error.message : 'Creator lookup failed' }, { status: 500 }) }
 
