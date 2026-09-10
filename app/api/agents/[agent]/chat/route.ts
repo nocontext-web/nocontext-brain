@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { appendStandingMemory } from '@/lib/standing-memory'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   ])
 
   const basePrompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS[agent as AgentKey] ?? ''
-  const memory = memoryRes.data?.content ?? ''
+  const memory = await loadSharedKnowledge('')
   const currentTodos = todoRes.data ?? []
 
   let systemPrompt = memory ? `${basePrompt}\n\n## YOUR MEMORY:\n${memory}` : basePrompt

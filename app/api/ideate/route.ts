@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { NextRequest } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
 
   const client = clientRes.data
   const casparPrompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS['caspar'] ?? ''
-  const casparMemory = memoryRes.data?.content ?? ''
+  const casparMemory = await loadSharedKnowledge('')
   const patterns = patternsRes.data ?? []
 
   const patternContext = patterns.length > 0

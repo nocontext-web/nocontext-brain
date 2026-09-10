@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { GoogleAIFileManager } from '@google/generative-ai/server'
@@ -113,7 +114,7 @@ Be specific and honest. No generic observations.`,
     ])
 
     const basePrompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS[agent as AgentKey] ?? ''
-    const memory = memoryRes.data?.content ?? ''
+    const memory = await loadSharedKnowledge('')
     const systemPrompt = memory ? `${basePrompt}\n\n## YOUR MEMORY:\n${memory}` : basePrompt
 
     const claudeResponse = await anthropic.messages.create({

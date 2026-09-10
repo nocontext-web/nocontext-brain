@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -68,7 +69,7 @@ export async function POST() {
   const calendar = calRes.data ?? []
   const meetings = meetingsRes.data ?? []
   const clients = clientsRes.data ?? []
-  const memory = memoryRes.data?.content ?? ''
+  const memory = await loadSharedKnowledge('')
 
   const todoBlock = todos.length
     ? todos.map(t => `- ${t.content}`).join('\n')
@@ -118,7 +119,7 @@ ${meetingBlock}
 ACTIVE CLIENTS:
 ${clientBlock}
 
-${memory ? `YOUR MEMORY:\n${memory.slice(0, 600)}` : ''}
+${memory ? `YOUR MEMORY:\n${memory}` : ''}
 
 Based on the current state above, generate 3-4 genuine thoughts as Caspar. These are live observations — not a morning brief, not a report. Connect dots. Notice what's changed. Use names. Be specific.
 

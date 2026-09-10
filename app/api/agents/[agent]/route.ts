@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { DEFAULT_PROMPTS, AGENT_KEYS, AgentKey } from '@/lib/agents'
@@ -15,7 +16,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ age
   ])
 
   const prompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS[agent as AgentKey] ?? ''
-  const memory = memoryRes.data?.content ?? ''
+  const memory = await loadSharedKnowledge('')
 
   return NextResponse.json({ prompt, memory })
 }

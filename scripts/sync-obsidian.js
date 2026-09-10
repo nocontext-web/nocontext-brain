@@ -1,164 +1,51 @@
 #!/usr/bin/env node
-/**
- * Obsidian ↔ Supabase two-way sync
- * - Obsidian → Supabase: file changes push to DB immediately
- * - Supabase → Obsidian: agent-updated notes get written back to vault every 15s
- * Run: node scripts/sync-obsidian.js
- */
-
-require('dotenv').config({ path: require('path').join(__dirname, '../.env.local') })
-
-const chokidar = require('chokidar')
-const fs = require('fs')
-const path = require('path')
-const { execFile } = require('child_process')
-const { promisify } = require('util')
-const { createClient } = require('@supabase/supabase-js')
-
-const execFileAsync = promisify(execFile)
-
-const VAULT = '/Users/joshua/nocontext-vault'
-const FOLDERS = ['Clients', 'Creators', 'Culture', 'Campaigns', 'Taste', 'Josh', 'People', 'Decisions', 'Creative', 'Rules', 'Caspar', 'Daily']
-const POLL_INTERVAL = 15000 // 15 seconds
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SECRET_KEY
-)
-
-// Track last time we polled so we only fetch newly agent-updated notes
-let lastPoll = new Date().toISOString()
-
-function parsePath(filePath) {
-  const rel = path.relative(VAULT, filePath)
-  const parts = rel.split(path.sep)
-  const folder = parts[0]
-  const title = path.basename(filePath, '.md')
-  return { rel, folder, title }
+// Three-way sync. Concurrent edits and deletions need human resolution.
+const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
+require('dotenv').config({path:process.env.BRAIN_ENV_FILE || path.join(os.homedir(),'nocontext-brain/.env.local')});
+const {createClient}=require('@supabase/supabase-js');
+const {hash,decide,safePath}=require('./vault-sync-core.cjs');
+const vault=process.env.OBSIDIAN_VAULT || path.join(os.homedir(),'nocontext-vault');
+const statePath=path.join(vault,'.caspar-sync-state.json');
+const folders=new Set(['Clients','Creators','Culture','Campaigns','Taste','Josh','People','Decisions','Creative','Rules','Caspar','Daily']);
+const db=createClient(process.env.NEXT_PUBLIC_SUPABASE_URL,process.env.SUPABASE_SECRET_KEY);
+let busy=false;
+async function scan(dir,relative='',out=new Map()){
+ for(const entry of await fs.readdir(dir,{withFileTypes:true})){
+  if(entry.isSymbolicLink())continue;
+  const rel=path.join(relative,entry.name);
+  if(!relative&&!folders.has(entry.name))continue;
+  if(entry.isDirectory())await scan(path.join(dir,entry.name),rel,out);
+  else if(entry.name.endsWith('.md'))out.set(rel,await fs.readFile(path.join(dir,entry.name),'utf8'));
+ }return out;
 }
-
-async function upsertNote(filePath) {
-  const { rel, folder, title } = parsePath(filePath)
-  if (!FOLDERS.includes(folder)) return
-  if (!filePath.endsWith('.md')) return
-
-  const content = fs.readFileSync(filePath, 'utf8').trim()
-  if (!content) return
-
-  const { error } = await supabase
-    .from('obsidian_notes')
-    .upsert(
-      { path: rel, folder, title, content, source: 'watcher', updated_at: new Date().toISOString() },
-      { onConflict: 'path' }
-    )
-
-  if (error) {
-    console.error(`Error syncing ${rel}:`, error.message)
-  } else {
-    console.log(`✓ Synced: ${rel}`)
+async function sync(){
+ if(busy)return;busy=true;
+ try{
+  let state={};try{state=JSON.parse(await fs.readFile(statePath,'utf8'))}catch(e){if(e.code!=='ENOENT')throw e;}
+  const local=await scan(vault),remote=new Map();
+  for(let offset=0;;offset+=500){const {data,error}=await db.from('obsidian_notes').select('path,content,updated_at').order('path').range(offset,offset+499);if(error)throw error;for(const n of data)if(folders.has(n.path.split('/')[0]))remote.set(n.path,n);if(data.length<500)break;}
+  for(const rel of new Set([...local.keys(),...remote.keys()])){
+   const target=safePath(vault,rel),l=local.get(rel)??null,row=remote.get(rel),r=row?.content??null;
+   const action=decide(l,r,state[rel]);
+   if(action==='same'){state[rel]=hash(l);continue;}
+   if(action==='conflict'){
+    // Preserve the remote version separately; never replace either side.
+    if(r!==null){const conflict=safePath(path.join(vault,'Sync Conflicts'),rel+'.remote-'+hash(r).slice(0,8)+'.md');await fs.mkdir(path.dirname(conflict),{recursive:true});await fs.writeFile(conflict,r,{flag:'wx'}).catch(e=>{if(e.code!=='EEXIST')throw e;});}
+    console.warn('Needs review in Sync Conflicts:',rel);continue;
+   }
+   // Recheck the local file immediately before committing a remote change.
+   let current=null;try{current=await fs.readFile(target,'utf8')}catch(e){if(e.code!=='ENOENT')throw e;}
+   if(current!==l)continue;
+   if(action==='pull'){await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,r);state[rel]=hash(r);}
+   else{
+    const body={path:rel,folder:rel.split('/')[0],title:path.basename(rel,'.md'),content:l,source:'watcher',updated_at:new Date().toISOString()};
+    const result=row?await db.from('obsidian_notes').update(body).eq('path',rel).eq('updated_at',row.updated_at).select('path'):await db.from('obsidian_notes').insert(body).select('path');
+    if(result.error){if(result.error.code==='23505')continue;throw result.error;}
+    if(result.data?.length)state[rel]=hash(l);
+   }
   }
+  await fs.writeFile(statePath+'.tmp',JSON.stringify(state));await fs.rename(statePath+'.tmp',statePath);
+ }finally{busy=false;}
 }
-
-async function deleteNote(filePath) {
-  const { rel } = parsePath(filePath)
-  await supabase.from('obsidian_notes').delete().eq('path', rel)
-  console.log(`✗ Deleted: ${rel}`)
-}
-
-async function syncAll() {
-  console.log('Doing full sync...')
-  for (const folder of FOLDERS) {
-    const dir = path.join(VAULT, folder)
-    if (!fs.existsSync(dir)) continue
-    const files = fs.readdirSync(dir).filter(f => f.endsWith('.md'))
-    for (const file of files) {
-      await upsertNote(path.join(dir, file))
-    }
-  }
-  console.log('Full sync complete.')
-}
-
-// Every agent-driven write gets committed so a bad automated edit is a
-// `git revert`/`git log -p` away, not a silent, permanent loss. Never throws —
-// a git hiccup shouldn't take down the sync loop, it just means that one
-// batch of changes isn't backed by a commit yet (the next one still works).
-async function commitAgentChanges(paths) {
-  try {
-    await execFileAsync('git', ['add', '--', ...paths], { cwd: VAULT });
-    const summary = paths.length <= 3 ? paths.join(', ') : `${paths.length} notes`;
-    await execFileAsync('git', ['commit', '-q', '-m', `agent: ${summary}`], { cwd: VAULT });
-  } catch (err) {
-    // Most common case: nothing to commit (content unchanged) — not an error.
-    if (!/nothing to commit/.test(err.stdout || err.message || '')) {
-      console.error('git commit failed:', err.message);
-    }
-  }
-}
-
-// Poll Supabase for notes updated by agents and write them back to vault.
-// `full: true` pulls every agent-authored note regardless of when it was last
-// updated — used once on startup so a fresh/stopped vault backfills everything
-// instead of only catching updates from this point forward.
-async function pullAgentUpdates(full = false) {
-  const since = lastPoll
-  lastPoll = new Date().toISOString()
-
-  let query = supabase
-    .from('obsidian_notes')
-    .select('path, folder, title, content')
-    .eq('source', 'agent')
-
-  if (!full) query = query.gte('updated_at', since)
-
-  const { data, error } = await query
-  if (error) { console.error('pullAgentUpdates error:', error.message); return }
-  if (!data || data.length === 0) return
-
-  const writtenPaths = []
-  for (const note of data) {
-    const filePath = path.join(VAULT, note.path)
-    // note.path can have extra nested segments beyond note.folder (e.g. a title
-    // containing a "/"), so create the actual parent dir, not just the top folder.
-    const parentDir = path.dirname(filePath)
-    if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true })
-
-    fs.writeFileSync(filePath, note.content, 'utf8')
-    writtenPaths.push(note.path)
-    console.log(`← Agent updated: ${note.path}`)
-  }
-
-  await commitAgentChanges(writtenPaths)
-
-  if (full) console.log(`← Backfilled ${data.length} agent notes`)
-}
-
-async function main() {
-  console.log('Obsidian sync started (two-way)')
-  console.log('Vault:', VAULT)
-
-  await syncAll()
-
-  // Backfill everything Caspar/Hermes have already written before we start
-  // watching — otherwise notes written while this script wasn't running are
-  // invisible forever (it only used to catch updates from the moment it starts).
-  await pullAgentUpdates(true)
-
-  // Watch vault for your changes → Supabase
-  const watcher = chokidar.watch(FOLDERS.map(f => path.join(VAULT, f)), {
-    persistent: true,
-    ignoreInitial: true,
-    awaitWriteFinish: { stabilityThreshold: 800 },
-  })
-
-  watcher
-    .on('add', upsertNote)
-    .on('change', upsertNote)
-    .on('unlink', deleteNote)
-
-  // Poll Supabase for agent updates → vault
-  setInterval(() => pullAgentUpdates(false), POLL_INTERVAL)
-
-  console.log('Watching for changes... (Ctrl+C to stop)')
-}
-
-main().catch(console.error)
+if(require.main===module){sync().catch(console.error);setInterval(()=>sync().catch(console.error),15000);}
+module.exports={sync};

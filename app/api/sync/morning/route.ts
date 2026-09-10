@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { sydneyDayBoundsUTC } from '@/lib/sydney-time'
 import { eventPhase } from '@/lib/email-thread'
 import { POST as syncGmail } from '../gmail/route'
@@ -13,6 +14,17 @@ async function postToSlack(text: string): Promise<void> {
   const channel = process.env.YAY_CHANNEL_ID
   if (!token || !channel) throw new Error('Morning Slack destination is not configured')
 
+  const readSlack = async (method: string) => {
+    const url = new URL('https://slack.com/api/' + method)
+    url.searchParams.set('channel', channel)
+    url.searchParams.set('limit', '100')
+    const response = await fetch(url, {headers: {Authorization: `Bearer ${token}`}})
+    const result = await response.json()
+    if (!result.ok) throw new Error('Cannot verify private Slack destination')
+    return result
+  }
+  const [auth, info, members] = await Promise.all(['auth.test', 'conversations.info', 'conversations.members'].map(readSlack))
+  if (!process.env.JOSHUA_SLACK_USER_ID || !info.channel?.is_private || info.channel.is_ext_shared || info.channel.is_org_shared || members.response_metadata?.next_cursor || !members.members?.length || !members.members.every((id: string) => id === auth.user_id || id === process.env.JOSHUA_SLACK_USER_ID)) throw new Error('Morning destination must contain only Josh and Caspar')
   const response = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {
@@ -94,7 +106,7 @@ export async function POST() {
   const pocketFresh=pocketStatus?.succeeded && Date.now()-Date.parse(pocketStatus.checked_at)<15*60000
   const limitations=[!fresh[0]||eventsRes.error?'Calendar could not be refreshed.':null,!fresh[1]||emailsRes.error?'Email reply status could not be refreshed.':null,!pocketFresh||pocketRes.error?'Pocket could not be refreshed.':pocketStatus?.details?.more?'Some Pocket recordings are still being processed.':null].filter(Boolean)
   const todos = todosRes.data ?? []
-  const memory = memoryRes.data?.content ?? ''
+  const memory = await loadSharedKnowledge('')
 
   const dayOfWeek = now.toLocaleDateString('en-AU', { weekday: 'long', timeZone: 'Australia/Sydney' })
   const dateStr = now.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', timeZone: 'Australia/Sydney' })
@@ -129,7 +141,7 @@ RULES:
 - Emails are context only. Flag them if they need a reply, but don't assume the underlying work isn't done.
 - If todos are empty or quiet, say so. Don't manufacture urgency.
 - Never use em dashes. Never use bold headers.
-${memory ? `\nYour memory:\n${memory.slice(0, 500)}` : ''}
+${memory ? `\nYour memory:\n${memory}` : ''}
 
 TODAY'S CALENDAR:
 ${calBlock}

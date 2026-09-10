@@ -1,0 +1,4 @@
+const {test}=require('node:test'),assert=require('node:assert/strict');const {hash,decide,safePath}=require('../scripts/vault-sync-core.cjs');
+test('startup never overwrites divergent shared and local notes',()=>{assert.equal(decide('old laptop','new remote',undefined),'conflict');assert.equal(decide(null,'new remote',undefined),'pull')});
+test('three-way sync distinguishes unilateral edits and concurrent changes',()=>{let b=hash('original');assert.equal(decide('original','remote edit',b),'pull');assert.equal(decide('local edit','original',b),'push');assert.equal(decide('local edit','remote edit',b),'conflict');assert.equal(decide(null,'original',b),'conflict')});
+test('database note paths cannot escape the vault',()=>{assert.throws(()=>safePath('/vault','../secret.md'));assert.equal(safePath('/vault','Clients/A.md'),'/vault/Clients/A.md')});

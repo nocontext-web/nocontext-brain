@@ -1,3 +1,4 @@
+import { loadSharedKnowledge } from '@/lib/shared-knowledge'
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { supabase } from '@/lib/supabase'
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
   ])
 
   const basePrompt = promptRes.data?.prompt ?? DEFAULT_PROMPTS[agentKey] ?? ''
-  const memory = memoryRes.data?.content ?? ''
+  const memory = await loadSharedKnowledge('')
 
   let calendarCtx = ''
   if (agentKey === 'caspar') {
