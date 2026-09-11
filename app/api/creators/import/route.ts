@@ -1,3 +1,4 @@
+import { creatorLocation } from '@/lib/creator-location'
 import { socialUrl } from '@/lib/social-url'
 import { NextRequest, NextResponse } from 'next/server'
 import { GoogleAIFileManager, FileState } from '@google/generative-ai/server'
@@ -81,6 +82,7 @@ async function scrapeTikTok(url: string) {
   if (!data.length) throw new Error('No TikTok profile data returned')
   const p = data[0]
   return {
+    bio: p.authorMeta?.signature || p.signature || p.bio || '',
     profile_image: p.authorMeta?.avatar || p.avatarLarger || p.avatarThumb || p.avatar || '',
     tt_handle: `@${p.authorMeta?.name || p.uniqueId || username}`,
     tt_followers: formatFollowers(p.followers || p.followerCount),
@@ -377,11 +379,22 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // City comes from whichever source actually found one — the video analysis
-  // (accent/signage/captions) or Instagram's bio location field. Country only
-  // ever comes from the video analysis; neither scraper returns it.
-  const city = videoCity || igData.location || ''
-  const country = videoCountry || ''
+  const locationSources = [
+    {text:igData.bio || '',url:igUrl || '',kind:'profile bio'},
+    {text:ttData.bio || '',url:ttUrl || '',kind:'profile bio'}
+  ]
+  let locationEvidence = creatorLocation(locationSources)
+  if (!locationEvidence.country) {
+    try {
+      const posts = igUrl
+        ? await fetchFromApify('apify~instagram-scraper', {directUrls:[igUrl],resultsType:'posts',resultsLimit:3})
+        : await fetchFromApify('clockworks~tiktok-scraper', {profiles:[extractUsername(ttUrl!)],resultsPerPage:3,shouldDownloadVideos:false})
+      for (const post of posts.slice(0,3)) locationSources.push({text:String(post.caption || post.text || ''),url:post.url || post.webVideoUrl || igUrl || ttUrl || '',kind:'recent caption'})
+      locationEvidence = creatorLocation(locationSources)
+    } catch { /* Missing evidence remains unknown, not a guessed country. */ }
+  }
+  const city = ''
+  const country = locationEvidence.country
 
   const creator = {
     name: igData.name || ttData.name || '',
@@ -408,6 +421,7 @@ export async function POST(req: NextRequest) {
   const { data, error } = await supabase.rpc('save_rolodex_profile', { p_creator: creator, p_note: note || '' }).single()
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
+  if ((data as any)?.id) await supabase.from('source_sync_status').upsert({source:`creator-location:${(data as any).id}`,succeeded:true,checked_at:new Date().toISOString(),details:locationEvidence},{onConflict:'source'})
   const image = igData.profile_image || ttData.profile_image
   if (image && /^https:\/\//.test(image) && (data as any)?.id) {
     const savedImage = await supabase.from('source_sync_status').upsert({source:`creator-image:${(data as any).id}`,succeeded:true,checked_at:new Date().toISOString(),details:{url:image}},{onConflict:'source'})
